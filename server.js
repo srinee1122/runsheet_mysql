@@ -25,7 +25,18 @@ app.use(express.json({ limit: '5mb' }));
 // Everything under public/ is intentionally served to anyone with no authentication —
 // the login page has to be reachable before anyone can sign in. Data lives in MySQL now
 // (see db.js), so there is no longer a database file under public/ needing protection.
-app.use(express.static(path.join(__dirname, 'public')));
+// Cache-Control: no-cache on code and page files. Without it, browsers keep ES modules in
+// cache across deploys and GoDaddy's Cloudflare-backed CDN caches .js at the edge — which
+// produced a print page running a NEW print.js against an OLD runsheet-data.js, and the
+// word "undefined" on a printed sign-off line. no-cache means "always revalidate": the
+// server answers 304 when the file is unchanged (still fast, ETags are on by default), and
+// sends the new file the moment a deploy changes it. Both browsers and Cloudflare honour
+// it. Images and fonts are left cacheable; they don't change with deploys.
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders(res, filePath) {
+    if (/\.(js|mjs|css|html)$/i.test(filePath)) res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+  },
+}));
 
 // Every /api/* route requires a valid Firebase ID token from here on — the login page
 // and the rest of the static frontend stay reachable without one, since you need to be

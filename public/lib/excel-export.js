@@ -178,8 +178,17 @@ function writeAllRoundTable(ws, DATA, startRow) {
   cell(ws, r, 1, 'ALL ROUND ITEMS — distribution by invoice', { font: { bold: true, size: 11 } });
   r++;
 
-  const headers = ['Product', 'Packing', 'Unit', ...ROWS.map((row, i) => `${i + 1}. ${row.inv}`), 'QTY', 'Q/C', 'CTN'];
-  headers.forEach((h, i) => cell(ws, r, i + 1, h, { font: { bold: true, size: 9 }, alignment: { horizontal: 'center', wrapText: true }, fill: HEADER_FILL, border: BORDER_ALL }));
+  // Both tables share the sheet's columns, and column 1 is sized for the main table's tiny
+  // "S.N" column — so a product name placed there was crushed to a few characters. The name
+  // now spans columns 1–4 (the width of S.N + Invoice + S.Order + Customer above it), which
+  // is wide enough to show a full SKU name; anything longer wraps rather than being cut.
+  const NAME_SPAN = 4;
+  const hdr = (col, text) => cell(ws, r, col, text, { font: { bold: true, size: 9 }, alignment: { horizontal: 'center', wrapText: true }, fill: HEADER_FILL, border: BORDER_ALL });
+  merge(ws, r, 1, r, NAME_SPAN); hdr(1, 'Product');
+  hdr(NAME_SPAN + 1, 'Packing'); hdr(NAME_SPAN + 2, 'Unit');
+  ROWS.forEach((row, i) => hdr(NAME_SPAN + 3 + i, `${i + 1}. ${row.inv}`));
+  const tailStart = NAME_SPAN + 3 + ROWS.length;
+  hdr(tailStart, 'QTY'); hdr(tailStart + 1, 'Q/C'); hdr(tailStart + 2, 'CTN');
   r++;
 
   const arCtnByInv = ROWS.map((_, i) => ALL_ROUND.reduce((s, p) => s + ctnOf(p.byInv[i] || 0, p.qty), 0));
@@ -188,16 +197,24 @@ function writeAllRoundTable(ws, DATA, startRow) {
     const rowPcs = ROWS.reduce((s, _, i) => s + (p.byInv[i] || 0), 0);
     const rowCtn = ctnOf(rowPcs, p.qty);
     arCtnRowT += rowCtn;
-    const vals = [p.name, p.packing === 'bag' ? 'Bag' : 'Carton', p.unit === 'PCS' ? 'Pcs' : (p.packing === 'bag' ? 'Bag' : 'Ctn'),
-      ...ROWS.map((_, i) => round2(displayQty(p.byInv[i] || 0, p))),
-      round2(displayQty(rowPcs, p)), p.qty, round2(rowCtn)];
-    vals.forEach((v, j) => cell(ws, r, j + 1, v, { font: { size: 9 }, border: BORDER_ALL, alignment: j === 0 ? { horizontal: 'left' } : { horizontal: 'center' } }));
+    const num = (col, v) => cell(ws, r, col, v, { font: { size: 9 }, border: BORDER_ALL, alignment: { horizontal: 'center' } });
+    // Blank border cells first, then merge, then the name: ExcelJS routes any write inside a
+    // merged block to the block's single value, so writing blanks after the name would erase it.
+    for (let c = 2; c <= NAME_SPAN; c++) cell(ws, r, c, '', { border: BORDER_ALL });
+    merge(ws, r, 1, r, NAME_SPAN);
+    cell(ws, r, 1, p.name, { font: { size: 9 }, border: BORDER_ALL, alignment: { horizontal: 'left', wrapText: true, vertical: 'top' } });
+    num(NAME_SPAN + 1, p.packing === 'bag' ? 'Bag' : 'Carton');
+    num(NAME_SPAN + 2, p.unit === 'PCS' ? 'Pcs' : (p.packing === 'bag' ? 'Bag' : 'Ctn'));
+    ROWS.forEach((_, i) => num(NAME_SPAN + 3 + i, round2(displayQty(p.byInv[i] || 0, p))));
+    num(tailStart, round2(displayQty(rowPcs, p))); num(tailStart + 1, p.qty); num(tailStart + 2, round2(rowCtn));
     r++;
   });
 
-  const footVals = ['Total per shop — cartons', '', '', ...ROWS.map((_, i) => round2(arCtnByInv[i])), '', '', round2(arCtnRowT)];
-  footVals.forEach((v, j) => cell(ws, r, j + 1, v, { font: { bold: true, size: 9 }, border: BORDER_ALL, fill: TOTAL_FILL, alignment: { horizontal: j === 0 ? 'left' : 'center' } }));
-  merge(ws, r, 1, r, 3);
+  const foot = (col, v) => cell(ws, r, col, v, { font: { bold: true, size: 9 }, border: BORDER_ALL, fill: TOTAL_FILL, alignment: { horizontal: col === 1 ? 'left' : 'center' } });
+  for (let c = 2; c <= NAME_SPAN + 2; c++) foot(c, '');
+  merge(ws, r, 1, r, NAME_SPAN + 2); foot(1, 'Total per shop — cartons');
+  ROWS.forEach((_, i) => foot(NAME_SPAN + 3 + i, round2(arCtnByInv[i])));
+  foot(tailStart, ''); foot(tailStart + 1, ''); foot(tailStart + 2, round2(arCtnRowT));
   r++;
   return r;
 }

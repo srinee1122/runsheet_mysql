@@ -73,21 +73,55 @@ import { buildRunsheetData, ctnOf } from './lib/runsheet-data.js';
       n.appendChild(document.createTextNode(DATA.meta.notes));
     }
 
-    /* ---- main table ---- */
-    let h = `<thead>
+    /* ---- main table ----
+       Column widths are computed from the actual content, not guessed: every numeric or
+       short-text column takes exactly what its longest value (or header) needs, and the
+       table uses fixed layout so those widths are authoritative. The Customer column has no
+       width and therefore receives precisely whatever is left — the maximum the page can
+       give it. Only if even that isn't enough does a name wrap onto a second line. So the
+       runsheet stays on one page as long as it physically can, and never truncates a name. */
+    const MONO_PX = 5.6, COND_PX = 4.7, PAD = 10; // approx px per character at print sizes, plus cell padding+border
+    const longest = (arr) => arr.reduce((m, v) => Math.max(m, String(v ?? '').length), 0);
+    const monoW = (chars, min) => Math.max(min, Math.ceil(chars * MONO_PX + PAD));
+    const invW = monoW(Math.max(longest(ROWS.map(r => r.inv)), 7), 44);
+    const soW = monoW(Math.max(longest(ROWS.map(r => r.so)), 7), 40);
+    const byW = Math.max(34, Math.ceil(Math.max(longest(ROWS.map(r => r.by)), 5) * COND_PX + PAD));
+    // Round-item columns: the header is vertical (like the All Round Items table), so the
+    // width is set by the numbers in the column, never by the length of the product code.
+    const roundW = COLS.map((c, j) => monoW(Math.max(longest(ROWS.map(r => displayQty(r.pcs[j], c))), 2), 24));
+    // The three totals columns are sized from their values too — including the footer totals,
+    // which are the largest numbers on the sheet (a 128528.66 must never overflow its cell).
+    const pre = ROWS.map((r, i) => {
+      const otherC = Number(r.ctn != null ? r.ctn : r.other) || 0;
+      const riC = r.pcs.reduce((s, p, j) => s + ctnOf(p, COLS[j].qty), 0) + arCtnByInv[i];
+      return { otherC, riC, total: otherC + riC };
+    });
+    const sumOf = (k) => pre.reduce((s, x) => s + x[k], 0);
+    const ctnsW = monoW(longest([...pre.map(x => round2(x.otherC)), round2(sumOf('otherC'))]), 40);
+    const riW = monoW(longest([...pre.map(x => round2(x.riC)), round2(sumOf('riC'))]), 30);
+    const totW = monoW(longest([...pre.map(x => round2(x.total)), round2(sumOf('total'))]), 40);
+    // Fixed table layout takes column widths from the FIRST row — and the first row here is
+    // the "ROUND ITEMS" group header with colspans, so widths on the second header row were
+    // silently ignored (every column came out equal). A <colgroup> is what fixed layout
+    // honours regardless of row structure: one <col> per column, Customer left unsized so it
+    // receives exactly the remainder.
+    let h = `<colgroup><col style="width:22px"><col style="width:${invW}px"><col style="width:${soW}px"><col>
+      <col style="width:${byW}px"><col style="width:36px"><col style="width:40px">`
+      + roundW.map(w => `<col style="width:${w}px">`).join('')
+      + `<col style="width:${ctnsW}px"><col style="width:${riW}px"><col style="width:${totW}px"></colgroup><thead>
       <tr class="group">
         <th colspan="7" style="background:var(--band)"></th>
         <th colspan="${COLS.length}">ROUND ITEMS</th>
         <th colspan="3" style="background:var(--band)"></th>
       </tr>
       <tr>
-        <th style="width:22px">S.N</th><th style="width:56px">Invoice</th><th style="width:48px">S.Order</th>
-        <th>Customer Name</th><th style="width:60px">Taken By</th>
-        <th style="width:50px">Cash $</th><th style="width:54px">Cheque $</th>`;
-    COLS.forEach(c => h += `<th style="width:38px">${c.code}<span class="pack">${c.pack} &middot; ${c.unit === 'PCS' ? 'Pcs' : 'Ctn'}</span></th>`);
-    h += `<th style="width:40px">CTNS<span class="pack">box total</span></th>
-          <th style="width:40px">RI<span class="pack">CTN</span></th>
-          <th style="width:44px">TOTAL<span class="pack">PKGS</span></th></tr></thead><tbody>`;
+        <th style="width:22px">S.N</th><th style="width:${invW}px">Invoice</th><th style="width:${soW}px">S.Order</th>
+        <th>Customer Name</th><th style="width:${byW}px">Taken By</th>
+        <th style="width:36px">Cash $</th><th style="width:40px">Cheque $</th>`;
+    COLS.forEach((c, j) => h += `<th class="rot" style="width:${roundW[j]}px">${c.code}<span class="pack">${c.pack} &middot; ${c.unit === 'PCS' ? 'Pcs' : 'Ctn'}</span></th>`);
+    h += `<th>CTNS<span class="pack">box total</span></th>
+          <th>RI<span class="pack">CTN</span></th>
+          <th>TOTAL<span class="pack">PKGS</span></th></tr></thead><tbody>`;
 
     const colPcs = COLS.map(() => 0);
     let cashT = 0, chqT = 0, grandRoundCtn = 0, sheetTotal = 0;
@@ -141,6 +175,10 @@ import { buildRunsheetData, ctnOf } from './lib/runsheet-data.js';
     ROWS.forEach((_, i) => a += `<td>${round2(arCtnByInv[i]) || "·"}</td>`);
     a += `<td></td><td></td><td class="rt">${round2(arCtnRowT)}</td></tr></tfoot>`;
     document.getElementById("allRound").innerHTML = a;
+    // With many invoices the All Round matrix can't fit in the left panel alongside the two
+    // side panels (25 vertical invoice columns alone exceed it). Past 12 stops the matrix
+    // takes the full width and the Handover/Load Summary panels drop underneath, side by side.
+    document.querySelector(".bottom").classList.toggle("wide", ROWS.length > 12);
 
     /* ---- signatures ---- */
     document.getElementById("signRows").innerHTML =

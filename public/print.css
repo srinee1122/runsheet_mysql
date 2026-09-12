@@ -58,12 +58,31 @@ body{background:var(--chrome-bg);font-family:var(--sans);color:var(--chrome-text
 
 /* main table */
 table{border-collapse:collapse;width:100%}
+/* Fixed layout: the per-column widths print.js computes from the content are authoritative,
+   and the one column without a width (Customer) gets exactly the remainder. */
+.main{table-layout:fixed}
 .main th,.main td{border:.75px solid var(--rule);padding:1.5px 4px;font-size:9px;line-height:1.25}
 .main thead th{background:var(--band);font:600 8px/1.15 var(--cond);letter-spacing:.04em;text-transform:uppercase;vertical-align:bottom;padding:3px 3px}
 .main thead .group th{background:var(--round-band);border-bottom:none;font-size:8.5px;letter-spacing:.12em}
 .main thead .pack{font:500 7px/1 var(--mono);color:var(--ink-soft);letter-spacing:0;display:block;margin-top:1px;text-transform:none}
+/* Round-item column headers run vertically (same treatment as the All Round Items table)
+   so the column is only as wide as its numbers, not as wide as the product code. The pack
+   line becomes a second vertical line beside the code. */
+.main thead th.rot{writing-mode:vertical-rl;transform:rotate(180deg);height:60px;padding:3px 2px;
+  text-align:left;vertical-align:top;text-transform:none;letter-spacing:.02em;font:600 8px var(--mono)}
+.main thead th.rot .pack{display:block;margin-top:0;margin-left:1px}
+/* Headers may break between words (e.g. TAKEN / BY) rather than forcing a wider column. */
+.main thead th{white-space:normal;overflow-wrap:normal}
 .main td{font-family:var(--mono);text-align:center}
-.main td.txt{font-family:var(--cond);font-size:9.5px;font-weight:500;text-align:left;letter-spacing:.01em}
+/* Customer name: never squeezed or cut. With many round-item columns the browser shrinks
+   text columns first, which crushed long names into unreadable fragments — min-width keeps
+   the column legible and pushes the squeeze onto the numeric columns, which are short. A long
+   name wraps to a second line rather than losing any characters: a wrong delivery from a
+   truncated customer name is the one thing this printout must never cause. */
+.main td.txt{font-family:var(--cond);font-size:9.5px;font-weight:500;text-align:left;letter-spacing:.01em;
+  white-space:normal;overflow-wrap:normal;word-break:normal;line-height:1.15}
+/* Numbers never wrap or clip — their columns were sized to fit them. */
+.main td.num,.main td.tot-col,.main td:first-child{white-space:nowrap}
 .main td.by{font-family:var(--cond);font-size:8.5px;text-align:left;color:var(--ink-soft)}
 .main td.num{font-weight:500}
 .main td.zero{color:#c2c6cc}
@@ -78,19 +97,30 @@ table{border-collapse:collapse;width:100%}
 
 /* bottom zone */
 .bottom{display:grid;grid-template-columns:1fr 262px 208px;gap:8px;align-items:start;margin-top:2px}
+/* Many invoices: matrix full width, the two panels underneath side by side (see print.js). */
+.bottom.wide{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start}
+.bottom.wide>div:first-child{flex:0 0 100%}
+.bottom.wide>div:nth-child(2){flex:0 0 262px}
+.bottom.wide>div:nth-child(3){flex:0 0 208px}
 .panel-title{background:var(--band);border:.75px solid var(--rule);border-bottom:1.5px solid var(--rule-strong);
   font:600 8.5px/1 var(--cond);letter-spacing:.12em;text-transform:uppercase;padding:4px 6px;text-align:center}
 
 /* --- All Round Items distribution matrix --- */
 .allround th,.allround td{border:.75px solid var(--rule);font-size:8.5px;padding:1.5px 3px}
+.allround td:not(.txt){white-space:nowrap}
 .allround thead th{background:var(--band);font:600 7.5px var(--cond);letter-spacing:.04em;text-transform:uppercase;vertical-align:bottom}
 .allround thead th.inv{writing-mode:vertical-rl;transform:rotate(180deg);
   font:500 8px var(--mono);letter-spacing:.03em;text-transform:none;
   padding:4px 1px;height:56px;width:21px;text-align:left;background:var(--round-band)}
 .allround thead th.inv .sn{font:600 7px var(--cond);color:var(--ink-soft)}
 .allround td{font-family:var(--mono);text-align:center}
-.allround td.txt{font-family:var(--cond);font-size:9px;font-weight:500;text-align:left;white-space:nowrap;
-  overflow:hidden;text-overflow:ellipsis;max-width:168px}
+/* Product name: shown in full, wrapping onto a second line if needed. This used to be
+   nowrap + ellipsis at 168px, which cut long SKU names mid-way and left the team guessing
+   which product was meant. Width is bounded so the invoice columns still fit alongside. */
+/* Product name in full, wrapping between words only (never mid-word, so the column can't
+   collapse into a one-letter-per-line tower). */
+.allround td.txt{font-family:var(--cond);font-size:9px;font-weight:500;text-align:left;white-space:normal;
+  overflow-wrap:normal;word-break:normal;min-width:150px;line-height:1.15}
 .allround td.zero{color:#c9ccd1}
 .allround td.rt{background:#f5f6f7;font-weight:600}
 .allround tbody tr:nth-child(even) td{background:#fbfbfc}

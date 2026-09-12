@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# One-time SQLite -> MySQL migration artefacts — real data, never committed.
+*.db
+*.db-shm
+*.db-wal
+runsheet-import.sql
+
+# Environment / secrets
+.env
+.env.local
+flattened.json
+servicekey.json
+*serviceaccount*.json
+*service-account*.json
+
+# OS/editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+
+# Logs
+npm-debug.log*
+*.log

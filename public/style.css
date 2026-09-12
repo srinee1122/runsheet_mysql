@@ -199,6 +199,23 @@ tr:hover td{background:#fafbfd;}
 .mx-print-look .mono{font-family:'IBM Plex Mono',monospace;}
 .mx-print-look .center{text-align:center;}
 
+/* Main table scroll box: the table scrolls inside its own box (both axes) rather than the
+   page, which is what lets both the header rows (sticky top) and the lead columns (sticky
+   left) stay frozen while the quantities scroll — the same way a spreadsheet behaves. */
+.mx-scroll{max-height:calc(100vh - 250px);overflow:auto;border:1px solid var(--line);border-radius:6px;}
+.mx-scroll table.mx-main{border-collapse:separate;border-spacing:0;}
+.mx-scroll .mx-main th,.mx-scroll .mx-main td{border-width:0 1px 1px 0;}
+.mx-scroll .mx-main thead tr:nth-child(1) th{position:sticky;top:0;z-index:4;}
+.mx-scroll .mx-main thead tr:nth-child(2) th{position:sticky;top:var(--mx-head-1,20px);z-index:4;}
+.mx-scroll .mx-main .mx-lead{position:sticky;background:#fff;z-index:3;}
+.mx-scroll .mx-main thead .mx-lead{z-index:5;background:var(--bg);}
+.mx-scroll .mx-main .mx-lead-1{left:var(--mx-lead-1,0px);}
+.mx-scroll .mx-main .mx-lead-2{left:var(--mx-lead-2,0px);}
+.mx-scroll .mx-main .mx-lead-3{left:var(--mx-lead-3,0px);}
+.mx-scroll .mx-main .mx-lead-4{left:var(--mx-lead-4,0px);box-shadow:2px 0 0 var(--line);}
+.mx-scroll .mx-main tbody .mx-stripe-row:nth-child(even) td.mx-lead{background:var(--line-soft);}
+.mx-scroll .mx-main tfoot td{position:sticky;bottom:0;z-index:3;}
+
 .mx-section-title{font-size:13px;font-weight:600;margin:16px 0 8px;color:var(--ink);
   text-transform:uppercase;letter-spacing:.03em;}
 .mx-allround th:nth-child(1),.mx-allround td.mx-rowlabel{width:140px;

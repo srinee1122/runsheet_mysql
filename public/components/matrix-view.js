@@ -114,7 +114,23 @@ export default {
     this.rebuildMatrixRows();
     this.seedEntryDisplay();
   },
+  mounted() { this.$nextTick(this.updateStickyOffsets); },
+  updated() { this.$nextTick(this.updateStickyOffsets); },
   methods: {
+    // The four lead columns and the two header rows are position:sticky. Sticky needs a
+    // left/top offset per column/row, and those depend on the real rendered widths and
+    // heights (table-layout:fixed sizes columns from the colspan group row, so the th
+    // width hints aren't exact). Measured after each render and exposed as CSS variables
+    // on the table, which style.css reads — so the frozen edges always line up.
+    updateStickyOffsets() {
+      const box = this.$refs.mainScroll; if (!box) return;
+      const table = box.querySelector('table.mx-main'); if (!table) return;
+      const leads = table.querySelectorAll('thead tr:nth-child(2) th.mx-lead');
+      let left = 0;
+      leads.forEach((th, i) => { table.style.setProperty(`--mx-lead-${i + 1}`, left + 'px'); left += th.getBoundingClientRect().width; });
+      const groupRow = table.querySelector('thead tr:nth-child(1)');
+      if (groupRow) table.style.setProperty('--mx-head-1', groupRow.getBoundingClientRect().height + 'px');
+    },
     round2,
     productOf(id) { return this.products.find(p => p.id === id); },
     // Finds the actual stored round_item for a product on any stop — used to seed the
@@ -526,6 +542,7 @@ export default {
   },
   template: `
   <div class="panel mx-print-look" style="overflow-x:auto;">
+    <div class="mx-scroll" ref="mainScroll">
     <table class="mx-main" :style="{minWidth: mainTableMinWidth + 'px'}">
       <thead>
         <tr class="mx-group">
@@ -537,13 +554,14 @@ export default {
           <th :colspan="tailColspan"></th>
         </tr>
         <tr>
-          <th style="width:24px;">S.N</th><th style="width:62px;">Invoice</th><th style="width:56px;">S.Order</th>
-          <th style="width:200px;">Customer</th><th style="width:66px;">Taken By</th>
+          <th class="mx-lead mx-lead-1" style="width:24px;">S.N</th><th class="mx-lead mx-lead-2" style="width:62px;">Invoice</th><th class="mx-lead mx-lead-3" style="width:56px;">S.Order</th>
+          <th class="mx-lead mx-lead-4" style="width:200px;">Customer</th><th style="width:66px;">Taken By</th>
           <th class="mx-col-prepicked" style="width:28px;">Carton</th>
           <th class="mx-col-prepicked" style="width:28px;">Bag</th>
           <th style="width:74px;">Note</th>
-          <th v-for="c in columns" :key="c.product_id">
+          <th v-for="c in columns" :key="c.product_id" class="mx-tooltip-host">
             {{ c.code }}<span class="mx-pack">{{ c.unit==='PCS' ? 'pcs' : 'ctn' }} &middot; &times;{{ c.qty }}/ctn</span>
+            <div class="mx-tooltip">Product: <b>{{ (productOf(c.product_id) || {}).name || c.code }}</b></div>
           </th>
           <th v-if="!columns.length">&mdash;</th>
           <th class="mx-col-ri" style="width:28px;">Carton</th>
@@ -556,22 +574,25 @@ export default {
         <tr v-for="(stop, i) in stops" :key="stop._uid" class="mx-drag-row mx-stripe-row"
             :class="{ 'mx-dragging': draggingRowIndex===i, 'mx-drag-over': dragOverRowIndex===i }"
             @dragover.prevent @dragenter.prevent="onRowDragEnter(i)" @dragleave="onRowDragLeave(i)" @drop.prevent="onRowDrop(i)">
-          <td class="center mono mx-drag-handle" draggable="true" title="Drag to reorder"
+          <td class="center mono mx-drag-handle mx-lead mx-lead-1" draggable="true" title="Drag to reorder"
               @dragstart="onRowDragStart($event, i)" @dragend="onRowDragEnd">
             <span class="mx-drag-grip">&#8942;&#8942;</span>{{ i+1 }}
           </td>
-          <td><input type="text" class="mx-invoice-field" v-model="stop.invoice_no" @input="stop._invoiceNeedsInput=false" @keydown="handleKeyNav($event)"
+          <td class="mx-lead mx-lead-2"><input type="text" class="mx-invoice-field" v-model="stop.invoice_no" @input="stop._invoiceNeedsInput=false" @keydown="handleKeyNav($event)"
               :style="stop._invoiceNeedsInput && !stop.invoice_no ? 'border-color:var(--bad);background:var(--bad-soft)' : ''" /></td>
-          <td><input type="text" class="mx-focus-start" v-model="stop.so_no" @keydown="handleKeyNav($event)" /></td>
-          <td><CustomerPicker :customers="customers" v-model="stop.customer" @keydown="handleKeyNav($event)" /></td>
+          <td class="mx-lead mx-lead-3"><input type="text" class="mx-focus-start" v-model="stop.so_no" @keydown="handleKeyNav($event)" /></td>
+          <td class="mx-lead mx-lead-4"><CustomerPicker :customers="customers" v-model="stop.customer" @keydown="handleKeyNav($event)" /></td>
           <td><input type="text" v-model="stop.taken_by" @keydown="handleKeyNav($event)" /></td>
           <td><input type="number" min="0" step="1" v-model.number="stop.ctns_carton" @keydown="handleKeyNav($event)" /></td>
           <td><input type="number" min="0" step="1" v-model.number="stop.ctns_bag" @keydown="handleKeyNav($event)" /></td>
           <td><input type="text" v-model="stop.note" @keydown="handleKeyNav($event)" /></td>
-          <td v-for="c in columns" :key="c.product_id">
+          <td v-for="c in columns" :key="c.product_id" class="mx-tooltip-host-focus">
             <input type="number" min="0" :step="cellStep(productOf(c.product_id))" :value="cellValue(stop, c.product_id)"
               @input="setCellValue(stop, c.product_id, $event.target.value, columnPackingDefault(c.product_id))"
               @keydown="handleKeyNav($event)" />
+            <div class="mx-tooltip">
+              Product: <b>{{ (productOf(c.product_id) || {}).name || c.code }}</b><br>Shop: <b>{{ stop.customer || 'not entered yet' }}</b>
+            </div>
           </td>
           <td v-if="!columns.length" class="hint center">&mdash;</td>
           <td class="center mono mx-cell-ri">{{ riCarton(stop) }}</td>
@@ -596,6 +617,7 @@ export default {
         </tr>
       </tfoot>
     </table>
+    </div>
 
     <div style="margin:10px 0;">
       <button @click="$emit('add-stop')" :disabled="atLimit">+ Add stop</button>

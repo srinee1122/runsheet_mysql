@@ -5,6 +5,17 @@
 // exports build on the exact same logic rather than two copies that could quietly drift
 // apart from each other over time — every comment here is carried over unchanged from
 // there, since the reasoning behind each piece hasn't changed, only where it lives.
+// created_by is the creator's display name where Firebase has one, otherwise their email.
+// Accounts made in Firebase Console with just an email have no display name, so this
+// would otherwise print "nikarthika@sriambikas.com" on the sign-off line. Show only the
+// part before the @, with a capital first letter.
+function preparedByLabel(v) {
+  const s = String(v || '').trim();
+  if (!s) return '';
+  const name = s.includes('@') ? s.slice(0, s.indexOf('@')) : s;
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
 export function buildRunsheetData(rs, products) {
   const productById = new Map(products.map(p => [p.id, p]));
   const stops = (rs.data && rs.data.stops) || [];
@@ -110,6 +121,10 @@ export function buildRunsheetData(rs, products) {
       sheet_no: rs.sheet_no || '', run_date: rs.run_date || '', area: rs.area || '',
       del_date: rs.delivery_date || '', del_man: rs.delivery_man || '', veh_no: rs.vehicle_no || '',
       notes,
+      // Who created the runsheet — set by the server from the verified login when the sheet
+      // was first saved, never from anything the browser sends. Pre-fills the "Prepared By"
+      // sign-off line on the printout and in the Excel export.
+      created_by: preparedByLabel(rs.created_by),
     },
     cols, rows, all_round,
     packing: {

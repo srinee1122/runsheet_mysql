@@ -181,8 +181,10 @@ import { buildRunsheetData, ctnOf } from './lib/runsheet-data.js';
     document.querySelector(".bottom").classList.toggle("wide", ROWS.length > 12);
 
     /* ---- signatures ---- */
+    // "Prepared By" is filled from the account that created the runsheet; the rest stay as
+    // blank lines to be signed by hand.
     document.getElementById("signRows").innerHTML =
-      SIGN_ROLES.map(r => `<tr><td class="role">${r}</td><td class="blank"></td></tr>`).join("");
+      SIGN_ROLES.map(r => `<tr><td class="role">${r}</td><td class="blank${r === 'Prepared By' && DATA.meta.created_by ? ' filled' : ''}">${r === 'Prepared By' ? DATA.meta.created_by : ''}</td></tr>`).join("");
 
     /* ---- load summary ---- */
     const grand = otherT + grandRoundCtn + arCtnRowT;

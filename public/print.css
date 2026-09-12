@@ -134,6 +134,7 @@ table{border-collapse:collapse;width:100%}
 .signs td{border:.75px solid var(--rule);font-size:9px;padding:2px 5px}
 .signs td.role{font:500 8.5px/1.15 var(--cond);letter-spacing:.03em;text-transform:uppercase;color:var(--ink-soft);width:52%}
 .signs td.blank{height:19.5px}
+.signs td.filled{font:600 9.5px var(--cond);letter-spacing:.02em;color:var(--ink)}
 
 .grand td{border:.75px solid var(--rule);font-size:9px;padding:2.5px 5px}
 .grand .lbl{font:500 9px var(--cond);letter-spacing:.05em;text-transform:uppercase;color:var(--ink-soft)}

@@ -235,7 +235,9 @@ function writeSignaturesAndSummary(ws, DATA, startRow) {
   SIGN_ROLES.forEach(role => {
     cell(ws, r, 1, role, { font: { size: 9 }, border: BORDER_ALL });
     merge(ws, r, 2, r, 3);
-    cell(ws, r, 2, '', { border: BORDER_ALL });
+    // "Prepared By" comes from the account that created the runsheet; the rest are blank.
+    const prefilled = role === 'Prepared By' ? (DATA.meta.created_by || '') : '';
+    cell(ws, r, 2, prefilled, { border: BORDER_ALL, font: { size: 9, bold: !!prefilled } });
     r++;
   });
 

@@ -215,6 +215,10 @@ tr:hover td{background:#fafbfd;}
 .mx-scroll .mx-main .mx-lead-4{left:var(--mx-lead-4,0px);box-shadow:2px 0 0 var(--line);}
 .mx-scroll .mx-main tbody .mx-stripe-row:nth-child(even) td.mx-lead{background:var(--line-soft);}
 .mx-scroll .mx-main tfoot td{position:sticky;bottom:0;z-index:3;}
+/* A frozen lead cell is its own stacking layer, so a dropdown opened inside it (the
+   customer picker) was painting UNDER the frozen totals row and header. While the cell has
+   focus -- i.e. while its picker is open -- lift it above every other frozen layer. */
+.mx-scroll .mx-main td.mx-lead:focus-within{z-index:30;}
 
 .mx-section-title{font-size:13px;font-weight:600;margin:16px 0 8px;color:var(--ink);
   text-transform:uppercase;letter-spacing:.03em;}

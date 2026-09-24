@@ -88,7 +88,12 @@ import { buildRunsheetData, ctnOf } from './lib/runsheet-data.js';
     const byW = Math.max(34, Math.ceil(Math.max(longest(ROWS.map(r => r.by)), 5) * COND_PX + PAD));
     // Round-item columns: the header is vertical (like the All Round Items table), so the
     // width is set by the numbers in the column, never by the length of the product code.
-    const roundW = COLS.map((c, j) => monoW(Math.max(longest(ROWS.map(r => displayQty(r.pcs[j], c))), 2), 24));
+    // Measured from the ROUNDED value -- the one actually printed. The raw pieces figure is
+    // qty_ctn x qty/ctn, and floating point can turn that into something like
+    // 7.9799999999999995 (18 characters) while the cell shows 7.98; sizing from the raw
+    // figure gave one column three times the width it needed. Capped as well, so no single
+    // odd value can ever blow a column out.
+    const roundW = COLS.map((c, j) => Math.min(60, monoW(Math.max(longest(ROWS.map(r => round2(displayQty(r.pcs[j], c)))), 2), 24)));
     // The three totals columns are sized from their values too — including the footer totals,
     // which are the largest numbers on the sheet (a 128528.66 must never overflow its cell).
     const pre = ROWS.map((r, i) => {
@@ -118,7 +123,10 @@ import { buildRunsheetData, ctnOf } from './lib/runsheet-data.js';
         <th style="width:22px">S.N</th><th style="width:${invW}px">Invoice</th><th style="width:${soW}px">S.Order</th>
         <th>Customer Name</th><th style="width:${byW}px">Taken By</th>
         <th style="width:36px">Cash $</th><th style="width:40px">Cheque $</th>`;
-    COLS.forEach((c, j) => h += `<th class="rot" style="width:${roundW[j]}px">${c.code}<span class="pack">${c.pack} &middot; ${c.unit === 'PCS' ? 'Pcs' : 'Ctn'}</span></th>`);
+    // The vertical text lives in an inner span, not on the th itself: transforming a table
+    // cell makes browsers paint its collapsed borders in a separate layer and some of them
+    // go missing. Rotating the span leaves the cell -- and its borders -- untouched.
+    COLS.forEach((c, j) => h += `<th class="rot" style="width:${roundW[j]}px"><span class="rot-in">${c.code}<span class="pack">${c.pack} &middot; ${c.unit === 'PCS' ? 'Pcs' : 'Ctn'}</span></span></th>`);
     h += `<th>CTNS<span class="pack">box total</span></th>
           <th>RI<span class="pack">CTN</span></th>
           <th>TOTAL<span class="pack">PKGS</span></th></tr></thead><tbody>`;
@@ -158,7 +166,7 @@ import { buildRunsheetData, ctnOf } from './lib/runsheet-data.js';
 
     /* ---- All Round Items distribution matrix ---- */
     let a = `<thead><tr><th style="text-align:left">Product</th><th style="width:38px">Unit</th>`;
-    ROWS.forEach((r, i) => a += `<th class="inv"><span class="sn">${i + 1}·</span>${r.inv}</th>`);
+    ROWS.forEach((r, i) => a += `<th class="inv"><span class="rot-in"><span class="sn">${i + 1}·</span>${r.inv}</span></th>`);
     a += `<th style="width:32px">QTY</th><th style="width:34px">Q/C</th><th style="width:32px">CTN</th></tr></thead><tbody>`;
 
     let arCtnRowT = 0;
@@ -166,7 +174,7 @@ import { buildRunsheetData, ctnOf } from './lib/runsheet-data.js';
       const rowPcs = ROWS.reduce((s, _, i) => s + (p.byInv[i] || 0), 0);
       const rowCtn = ctnOf(rowPcs, p.qty);
       arCtnRowT += rowCtn;
-      a += `<tr><td class="txt">${p.name}<span class="pack"> &middot; ${p.packing === 'bag' ? 'Bag' : 'Carton'}</span></td>`;
+      a += `<tr><td class="txt">${p.label}<span class="pack"> &middot; ${p.packing === 'bag' ? 'Bag' : 'Carton'}</span></td>`;
       a += `<td>${p.unit === 'PCS' ? 'Pcs' : (p.packing === 'bag' ? 'Bag' : 'Ctn')}</td>`;
       ROWS.forEach((_, i) => { const v = round2(displayQty(p.byInv[i] || 0, p)); a += `<td class="${v === 0 ? 'zero' : ''}">${v === 0 ? '·' : v}</td>`; });
       a += `<td class="rt">${round2(displayQty(rowPcs, p))}</td><td>${p.qty}</td><td class="rt">${round2(rowCtn)}</td></tr>`;
@@ -175,16 +183,17 @@ import { buildRunsheetData, ctnOf } from './lib/runsheet-data.js';
     ROWS.forEach((_, i) => a += `<td>${round2(arCtnByInv[i]) || "·"}</td>`);
     a += `<td></td><td></td><td class="rt">${round2(arCtnRowT)}</td></tr></tfoot>`;
     document.getElementById("allRound").innerHTML = a;
-    // With many invoices the All Round matrix can't fit in the left panel alongside the two
-    // side panels (25 vertical invoice columns alone exceed it). Past 12 stops the matrix
-    // takes the full width and the Handover/Load Summary panels drop underneath, side by side.
-    document.querySelector(".bottom").classList.toggle("wide", ROWS.length > 12);
+    // Past 15 invoices the matrix can't fit beside the two side panels at normal size, so it
+    // tightens: smaller cell padding/font and a slightly narrower Product column. Keeps the
+    // panels beside the table (as they've always been) rather than pushing them off the page.
+    document.getElementById("allRound").classList.toggle("dense", ROWS.length > 15);
 
     /* ---- signatures ---- */
     // "Prepared By" is filled from the account that created the runsheet; the rest stay as
     // blank lines to be signed by hand.
+    const preparedBy = (DATA.meta && DATA.meta.created_by) || '';
     document.getElementById("signRows").innerHTML =
-      SIGN_ROLES.map(r => `<tr><td class="role">${r}</td><td class="blank${r === 'Prepared By' && DATA.meta.created_by ? ' filled' : ''}">${r === 'Prepared By' ? DATA.meta.created_by : ''}</td></tr>`).join("");
+      SIGN_ROLES.map(r => `<tr><td class="role">${r}</td><td class="blank${r === 'Prepared By' && preparedBy ? ' filled' : ''}">${r === 'Prepared By' ? preparedBy : ''}</td></tr>`).join("");
 
     /* ---- load summary ---- */
     const grand = otherT + grandRoundCtn + arCtnRowT;

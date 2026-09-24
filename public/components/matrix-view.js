@@ -9,6 +9,7 @@
 import ProductPicker from './product-picker.js';
 import CustomerPicker from './customer-picker.js';
 import { round2 } from '../lib/round2.js';
+import { splitSku } from '../lib/runsheet-data.js';
 
 export default {
   components: { ProductPicker, CustomerPicker },
@@ -117,6 +118,9 @@ export default {
   mounted() { this.$nextTick(this.updateStickyOffsets); },
   updated() { this.$nextTick(this.updateStickyOffsets); },
   methods: {
+    // Pack size shown on its own line above the name in the frozen label column -- same rule
+    // the printout and Excel use (see splitSku in lib/runsheet-data.js), so all three agree.
+    skuTail(name) { return splitSku(name).sku; },
     // The four lead columns and the two header rows are position:sticky. Sticky needs a
     // left/top offset per column/row, and those depend on the real rendered widths and
     // heights (table-layout:fixed sizes columns from the colspan group row, so the th
@@ -629,7 +633,7 @@ export default {
     <table class="mx-allround" :style="{minWidth: allroundTableMinWidth + 'px'}" v-if="stops.length">
       <thead>
         <tr>
-          <th style="text-align:left;width:140px;">Product</th>
+          <th style="text-align:left;width:170px;">Product</th>
           <th style="width:46px;">Unit</th>
           <th v-for="(stop, i) in stops" :key="stop._uid" class="mx-inv-head mx-tooltip-host">
             <div class="mx-inv-head-rot"><span class="mx-sn">{{ i+1 }}&middot;</span>{{ stop.invoice_no || '—' }}</div>
@@ -642,6 +646,7 @@ export default {
       <tbody>
         <tr v-for="row in matrixProductRows" :key="row.id" class="mx-stripe-row">
           <td class="mx-rowlabel mx-tooltip-host">
+            <div class="mx-sku" v-if="skuTail(row.name)">{{ skuTail(row.name) }}</div>
             <div class="mx-rowlabel-inner">
               <ProductPicker class="mx-rowlabel-picker" :key="row.id + '-' + (rowPickerResetSeq[row.id] || 0)"
                 :products="productsForRow(row.id)" :modelValue="row.id"

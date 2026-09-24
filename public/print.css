@@ -68,8 +68,11 @@ table{border-collapse:collapse;width:100%}
 /* Round-item column headers run vertically (same treatment as the All Round Items table)
    so the column is only as wide as its numbers, not as wide as the product code. The pack
    line becomes a second vertical line beside the code. */
-.main thead th.rot{writing-mode:vertical-rl;transform:rotate(180deg);height:60px;padding:3px 2px;
-  text-align:left;vertical-align:top;text-transform:none;letter-spacing:.02em;font:600 8px var(--mono)}
+/* Vertical text is on an inner .rot-in span, not the th: transforming a table cell makes
+   browsers paint its collapsed borders in a separate layer and some go missing. */
+.main thead th.rot{height:60px;padding:0;vertical-align:bottom;text-align:center;text-transform:none}
+.main thead th.rot .rot-in{display:inline-block;writing-mode:vertical-rl;transform:rotate(180deg);
+  padding:3px 2px;text-align:left;letter-spacing:.02em;font:600 8px var(--mono)}
 .main thead th.rot .pack{display:block;margin-top:0;margin-left:1px}
 /* Headers may break between words (e.g. TAKEN / BY) rather than forcing a wider column. */
 .main thead th{white-space:normal;overflow-wrap:normal}
@@ -97,11 +100,11 @@ table{border-collapse:collapse;width:100%}
 
 /* bottom zone */
 .bottom{display:grid;grid-template-columns:1fr 262px 208px;gap:8px;align-items:start;margin-top:2px}
-/* Many invoices: matrix full width, the two panels underneath side by side (see print.js). */
-.bottom.wide{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start}
-.bottom.wide>div:first-child{flex:0 0 100%}
-.bottom.wide>div:nth-child(2){flex:0 0 262px}
-.bottom.wide>div:nth-child(3){flex:0 0 208px}
+/* Checked & Handover and Load Summary are never split across a page break: if a panel
+   doesn't fit on the current page it moves to the next page whole. (The All Round matrix
+   in the first column may still continue across pages; it repeats its header row.) */
+.bottom>div:nth-child(2),.bottom>div:nth-child(3){break-inside:avoid;page-break-inside:avoid}
+.signs,.grand{break-inside:avoid;page-break-inside:avoid}
 .panel-title{background:var(--band);border:.75px solid var(--rule);border-bottom:1.5px solid var(--rule-strong);
   font:600 8.5px/1 var(--cond);letter-spacing:.12em;text-transform:uppercase;padding:4px 6px;text-align:center}
 
@@ -109,18 +112,29 @@ table{border-collapse:collapse;width:100%}
 .allround th,.allround td{border:.75px solid var(--rule);font-size:8.5px;padding:1.5px 3px}
 .allround td:not(.txt){white-space:nowrap}
 .allround thead th{background:var(--band);font:600 7.5px var(--cond);letter-spacing:.04em;text-transform:uppercase;vertical-align:bottom}
-.allround thead th.inv{writing-mode:vertical-rl;transform:rotate(180deg);
-  font:500 8px var(--mono);letter-spacing:.03em;text-transform:none;
-  padding:4px 1px;height:56px;width:21px;text-align:left;background:var(--round-band)}
+.allround thead th.inv{padding:0;height:56px;width:21px;vertical-align:bottom;text-align:center;
+  text-transform:none;background:var(--round-band)}
+.allround thead th.inv .rot-in{display:inline-block;writing-mode:vertical-rl;transform:rotate(180deg);
+  font:500 8px var(--mono);letter-spacing:.03em;padding:4px 1px;text-align:left}
 .allround thead th.inv .sn{font:600 7px var(--cond);color:var(--ink-soft)}
 .allround td{font-family:var(--mono);text-align:center}
 /* Product name: shown in full, wrapping onto a second line if needed. This used to be
    nowrap + ellipsis at 168px, which cut long SKU names mid-way and left the team guessing
    which product was meant. Width is bounded so the invoice columns still fit alongside. */
-/* Product name in full, wrapping between words only (never mid-word, so the column can't
-   collapse into a one-letter-per-line tower). */
-.allround td.txt{font-family:var(--cond);font-size:9px;font-weight:500;text-align:left;white-space:normal;
-  overflow-wrap:normal;word-break:normal;min-width:150px;line-height:1.15}
+/* Product on ONE line at a fixed narrow width, ellipsis at the end. The pack size leads the
+   label ("25KG X 1 · OOTY ..."), so what gets cut is the least important part -- which is
+   what lets this column stay narrow and the table sit beside the two side panels as it
+   always did, instead of taking the full width. Auto layout (not fixed) so that with many
+   invoices the numeric columns compress to their content rather than the Product column
+   collapsing. */
+.allround td.txt{font-family:var(--cond);font-size:9px;font-weight:500;text-align:left;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;width:168px;max-width:168px;line-height:1.15}
+/* Compact mode for busy runsheets (set by print.js past 15 invoices): everything a notch
+   tighter so 25 invoice columns still fit beside the side panels. */
+.allround.dense th,.allround.dense td{padding:1px 1.5px;font-size:7.5px}
+.allround.dense td.txt{width:126px;max-width:126px;font-size:8px}
+.allround.dense thead th.inv{width:13px}
+.allround.dense thead th.inv .rot-in{font-size:6px}
 .allround td.zero{color:#c9ccd1}
 .allround td.rt{background:#f5f6f7;font-weight:600}
 .allround tbody tr:nth-child(even) td{background:#fbfbfc}

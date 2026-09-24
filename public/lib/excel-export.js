@@ -202,7 +202,7 @@ function writeAllRoundTable(ws, DATA, startRow) {
     // merged block to the block's single value, so writing blanks after the name would erase it.
     for (let c = 2; c <= NAME_SPAN; c++) cell(ws, r, c, '', { border: BORDER_ALL });
     merge(ws, r, 1, r, NAME_SPAN);
-    cell(ws, r, 1, p.name, { font: { size: 9 }, border: BORDER_ALL, alignment: { horizontal: 'left', wrapText: true, vertical: 'top' } });
+    cell(ws, r, 1, p.label, { font: { size: 9 }, border: BORDER_ALL, alignment: { horizontal: 'left', wrapText: true, vertical: 'top' } });
     num(NAME_SPAN + 1, p.packing === 'bag' ? 'Bag' : 'Carton');
     num(NAME_SPAN + 2, p.unit === 'PCS' ? 'Pcs' : (p.packing === 'bag' ? 'Bag' : 'Ctn'));
     ROWS.forEach((_, i) => num(NAME_SPAN + 3 + i, round2(displayQty(p.byInv[i] || 0, p))));

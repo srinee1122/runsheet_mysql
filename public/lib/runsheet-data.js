@@ -16,6 +16,38 @@ function preparedByLabel(v) {
   return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
+// Splits a product name into its pack-size / SKU part and the rest, so the pack size can
+// be shown FIRST. It normally sits at the end of the name ("... RICE - 25KG X 1") and is
+// usually what tells two similar products apart -- so in a narrow column it was the first
+// thing cut off. Display-only; the stored name is never changed. Tested against every real
+// product name: ~94% get a pack size (last " - " segment, else the last size token onward,
+// handling "5KGX4", "500MLX 12", "5kg*6" and stray brackets), else a trailing bare pack
+// count like "1X60"; the rest are mostly non-products (fees, equipment), correctly blank.
+export function splitSku(name) {
+  const s = String(name || '').trim();
+  if (!s) return { sku: '', rest: '' };
+  const clean = (t) => t.replace(/[\s\-–(]+$/, '').trim();
+  const dash = s.lastIndexOf(' - ');
+  if (dash > 0 && /\d/.test(s.slice(dash + 3))) return { sku: s.slice(dash + 3).trim(), rest: clean(s.slice(0, dash)) };
+  const UNIT = '(?:kgs?|gms?|gr|g|mls?|ltrs?|l|litres?|pcs?|nos?|pkts?|pk|rolls?|bags?|tins?|cans?|btls?|bottles?|packs?|sachets?|inch|in)';
+  const token = new RegExp('\\d[\\d.,]*\\s*' + UNIT + '(?=\\s|[x*]\\s*\\d|$|[)\\],])', 'gi');
+  let last = null, m; while ((m = token.exec(s))) last = m.index;
+  if (last == null) {
+    const pk = s.match(/\d+\s*[xX*]\s*\d+\)?\s*$/);
+    return pk ? { sku: pk[0].replace(/\)/g, '').trim(), rest: clean(s.slice(0, pk.index)) } : { sku: '', rest: s };
+  }
+  let depth = 0, out = '';
+  for (const ch of s.slice(last)) { if (ch === '(') depth++; if (ch === ')') { if (depth === 0) continue; depth--; } out += ch; }
+  return { sku: out.replace(/\s+/g, ' ').trim(), rest: clean(s.slice(0, last)) };
+}
+
+// "25KG X 1 · OOTY PREMIUM PARBOILED PONNI RICE" -- pack size first, on one line. Falls
+// back to the plain name when no pack size can be found.
+export function skuFirstLabel(name) {
+  const { sku, rest } = splitSku(name);
+  return sku && rest ? `${sku} · ${rest}` : (sku || rest || String(name || ''));
+}
+
 export function buildRunsheetData(rs, products) {
   const productById = new Map(products.map(p => [p.id, p]));
   const stops = (rs.data && rs.data.stops) || [];
@@ -93,7 +125,7 @@ export function buildRunsheetData(rs, products) {
   }
 
   const all_round = matrixProducts.map(p => ({
-    name: p.name, qty: p.qty_per_ctn || 1,
+    name: p.name, label: skuFirstLabel(p.name), qty: p.qty_per_ctn || 1,
     unit: entryUnitFor(p.id, p),
     packing: packingTypeFor(p.id),
     byInv: stops.map(s => piecesFor(s, p.id, p.qty_per_ctn)),

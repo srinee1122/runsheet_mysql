@@ -218,10 +218,14 @@ tr:hover td{background:#fafbfd;}
 
 .mx-section-title{font-size:13px;font-weight:600;margin:16px 0 8px;color:var(--ink);
   text-transform:uppercase;letter-spacing:.03em;}
-.mx-allround th:nth-child(1),.mx-allround td.mx-rowlabel{width:140px;
+.mx-allround th:nth-child(1),.mx-allround td.mx-rowlabel{width:170px;
   position:sticky;left:0;background:#fff;z-index:2;text-align:left;font-size:11px;font-weight:500;}
 .mx-allround th:nth-child(2),.mx-allround td.mx-unit-cell{width:46px;
-  position:sticky;left:140px;background:#fff;z-index:2;text-align:center;}
+  position:sticky;left:170px;background:#fff;z-index:2;text-align:center;}
+/* Pack size / SKU pulled out of the product name and shown first, on its own line, so it's
+   never the part that gets cut off in the narrow frozen column. */
+.mx-sku{font:600 10px/1.2 'IBM Plex Mono',monospace;color:var(--accent);letter-spacing:.02em;
+  margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .mx-inv-head{vertical-align:bottom;padding:4px 1px;position:relative;}
 .mx-inv-head-rot{writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap;
   font-size:9.5px;font-weight:500;margin:0 auto;max-height:70px;overflow:hidden;}

@@ -209,7 +209,15 @@ function normalizeCustomerRecord(raw) {
 function truthy(v) { return v === true || /^(1|y|yes|true)$/i.test(String(v ?? '').trim()); }
 // packing_type is purely a billing classification (3rd-party delivery vendors charge
 // cartons and bags differently) — never affects the carton-count math elsewhere.
-function normPacking(v) { return /^bag/i.test(String(v ?? '').trim()) ? 'bag' : 'carton'; }
+// Three packing types: 'carton', 'bag', and 'pcs' -- loose pieces (frozen items and the
+// like) that travel as individual pieces, neither cartoned nor bagged. Loose pieces are
+// counted in pieces and kept out of every carton/bag figure and out of TOTAL PACKAGES.
+function normPacking(v) {
+  const s = String(v ?? '').trim();
+  if (/^bag/i.test(s)) return 'bag';
+  if (/^(pcs?|pieces?|loose)/i.test(s)) return 'pcs';
+  return 'carton';
+}
 // how this product's round-item quantity is normally counted — cartons or pieces; only
 // affects what unit entry fields default to/display, never how anything is stored.
 function normEntryUnit(v) { return /^p/i.test(String(v ?? '').trim()) ? 'PCS' : 'CTN'; }

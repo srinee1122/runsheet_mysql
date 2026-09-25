@@ -125,7 +125,7 @@ export default {
           <td>{{ p.item_type }}</td>
           <td class="right mono">{{ p.qty_per_ctn }}</td>
           <td class="right mono">{{ p.selling_rate }}</td>
-          <td class="center"><span class="badge" :class="p.packing_type === 'bag' ? 'warn' : 'ok'">{{ p.packing_type === 'bag' ? 'BAG' : 'CARTON' }}</span></td>
+          <td class="center"><span class="badge" :class="p.packing_type === 'bag' ? 'warn' : (p.packing_type === 'pcs' ? 'info' : 'ok')">{{ p.packing_type === 'bag' ? 'BAG' : (p.packing_type === 'pcs' ? 'PIECES' : 'CARTON') }}</span></td>
           <td class="center"><span class="badge" :class="p.entry_unit === 'PCS' ? 'warn' : 'ok'">{{ p.entry_unit === 'PCS' ? 'PIECES' : 'CARTONS' }}</span></td>
           <td class="center"><span class="badge round" v-if="p.is_round_item">REGULAR</span></td>
           <td class="right">
@@ -165,7 +165,7 @@ export default {
         <div class="field"><label>Selling rate</label><input type="number" step="0.01" v-model.number="form.selling_rate" /></div>
         <div class="field">
           <label>Packing <span class="hint">(billing classification only)</span></label>
-          <select v-model="form.packing_type"><option value="carton">Carton</option><option value="bag">Bag</option></select>
+          <select v-model="form.packing_type"><option value="carton">Carton</option><option value="bag">Bag</option><option value="pcs">Pieces (loose, e.g. frozen)</option></select>
         </div>
       </div>
       <div class="field">

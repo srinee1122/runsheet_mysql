@@ -106,7 +106,7 @@ export function buildRunsheetData(rs, products) {
   function packingTypeFor(productId) {
     for (const s of stops) {
       const ri = (s.round_items || []).find(r => r.product_id === productId);
-      if (ri) return ri.packing_type === 'bag' ? 'bag' : 'carton';
+      if (ri) return ri.packing_type === 'bag' ? 'bag' : (ri.packing_type === 'pcs' ? 'pcs' : 'carton');
     }
     return 'carton';
   }
@@ -124,12 +124,16 @@ export function buildRunsheetData(rs, products) {
     return (product && product.entry_unit === 'PCS') ? 'PCS' : 'CTN';
   }
 
-  const all_round = matrixProducts.map(p => ({
+  const all_round = matrixProducts.map(p => {
+    const packing = packingTypeFor(p.id);
+    return {
     name: p.name, label: skuFirstLabel(p.name), qty: p.qty_per_ctn || 1,
-    unit: entryUnitFor(p.id, p),
-    packing: packingTypeFor(p.id),
+    // loose pieces are always shown in pieces, whatever unit the row was last toggled to
+    unit: packing === 'pcs' ? 'PCS' : entryUnitFor(p.id, p),
+    packing,
+    loose: packing === 'pcs',
     byInv: stops.map(s => piecesFor(s, p.id, p.qty_per_ctn)),
-  }));
+  }; });
 
   const notes = stops.filter(s => s.note && s.note.trim()).map(s => `${s.so_no || ''}: ${s.note}`).join(' · ');
 
@@ -137,11 +141,15 @@ export function buildRunsheetData(rs, products) {
   // differently) — computed straight from the stored round items, not re-derived through
   // the pieces/ceiling conversion used elsewhere, so it stays exact. Manual CTNS gets the
   // same breakdown, since that's billed the same way.
-  let cartonUnits = 0, bagUnits = 0, ctnsCartonUnits = 0, ctnsBagUnits = 0;
+  // Loose pieces are counted separately, in pieces, and never added to cartons or bags.
+  let cartonUnits = 0, bagUnits = 0, ctnsCartonUnits = 0, ctnsBagUnits = 0, loosePieces = 0;
   for (const s of stops) {
     for (const ri of s.round_items || []) {
       const qty = Number(ri.qty_ctn) || 0;
-      if (ri.packing_type === 'bag') bagUnits += qty; else cartonUnits += qty;
+      if (ri.packing_type === 'pcs') {
+        const pr = productById.get(ri.product_id);
+        loosePieces += qty * ((pr && pr.qty_per_ctn) || 1);
+      } else if (ri.packing_type === 'bag') bagUnits += qty; else cartonUnits += qty;
     }
     const c = stopCtns(s);
     ctnsCartonUnits += c.carton;
@@ -162,6 +170,7 @@ export function buildRunsheetData(rs, products) {
     packing: {
       cartons: Math.round(cartonUnits * 100) / 100, bags: Math.round(bagUnits * 100) / 100,
       ctnsCartons: Math.round(ctnsCartonUnits * 100) / 100, ctnsBags: Math.round(ctnsBagUnits * 100) / 100,
+      pieces: Math.round(loosePieces * 100) / 100,
     },
   };
 }

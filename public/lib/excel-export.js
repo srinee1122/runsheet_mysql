@@ -23,6 +23,12 @@ const HEADER_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E
 const BAND_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD8E2F0' } };
 const TOTAL_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F3F3' } };
 
+// Loose pieces (packing 'pcs') never become cartons: they're kept out of every carton
+// figure and shown separately. Per-invoice pieces, and a "15 +5 pcs" label for totals.
+const piecesByInv = (DATA) => DATA.rows.map((_, i) =>
+  round2(DATA.all_round.reduce((s, p) => s + (p.loose ? (p.byInv[i] || 0) : 0), 0)));
+const withPcs = (pkgs, pcs) => pcs ? `${round2(pkgs)} +${pcs} pcs` : round2(pkgs);
+
 export async function downloadRunsheetExcel(runsheetId) {
   const [rs, products] = await Promise.all([
     Api.get(`/api/runsheets/${runsheetId}`),
@@ -132,10 +138,11 @@ function writeMainTable(ws, DATA, startRow) {
   ws.getRow(r).height = 28;
   r++;
 
-  const arCtnByInv = ROWS.map((_, i) => DATA.all_round.reduce((s, p) => s + ctnOf(p.byInv[i] || 0, p.qty), 0));
+  const arCtnByInv = ROWS.map((_, i) => DATA.all_round.reduce((s, p) => s + (p.loose ? 0 : ctnOf(p.byInv[i] || 0, p.qty)), 0));
   const displayQty = (pcs, col) => col.unit === 'PCS' ? pcs : ctnOf(pcs, col.qty);
   const colPcs = COLS.map(() => 0);
   let grandRoundCtn = 0, sheetTotal = 0;
+  const pcsByInv = piecesByInv(DATA);
 
   ROWS.forEach((row, i) => {
     const otherC = Number(row.ctn) || 0;
@@ -147,7 +154,7 @@ function writeMainTable(ws, DATA, startRow) {
 
     const vals = [i + 1, row.inv, row.so, row.cust, row.by, '', '',
       ...row.pcs.map((p, j) => round2(displayQty(p, COLS[j]))),
-      round2(otherC), round2(riC), round2(total)];
+      round2(otherC), round2(riC), withPcs(total, pcsByInv[i])];
     vals.forEach((v, j) => cell(ws, r, j + 1, v, { font: { size: 9 }, border: BORDER_ALL, alignment: j >= 3 && j <= 4 ? { horizontal: 'left' } : { horizontal: 'center' } }));
     r++;
   });
@@ -157,7 +164,7 @@ function writeMainTable(ws, DATA, startRow) {
   const riT = grandRoundCtn + arCtnT;
   const footVals = ['', '', '', '', 'TOTAL ROUND ITEMS', '', '',
     ...colPcs.map((p, j) => round2(displayQty(p, COLS[j]))),
-    round2(otherT), round2(riT), round2(sheetTotal)];
+    round2(otherT), round2(riT), withPcs(sheetTotal, pcsByInv.reduce((a, b) => a + b, 0))];
   footVals.forEach((v, j) => cell(ws, r, j + 1, v, { font: { bold: true, size: 9 }, border: BORDER_ALL, fill: TOTAL_FILL, alignment: { horizontal: j === 4 ? 'right' : 'center' } }));
   merge(ws, r, 1, r, 5);
   r++;
@@ -191,11 +198,11 @@ function writeAllRoundTable(ws, DATA, startRow) {
   hdr(tailStart, 'QTY'); hdr(tailStart + 1, 'Q/C'); hdr(tailStart + 2, 'CTN');
   r++;
 
-  const arCtnByInv = ROWS.map((_, i) => ALL_ROUND.reduce((s, p) => s + ctnOf(p.byInv[i] || 0, p.qty), 0));
+  const arCtnByInv = ROWS.map((_, i) => ALL_ROUND.reduce((s, p) => s + (p.loose ? 0 : ctnOf(p.byInv[i] || 0, p.qty)), 0));
   let arCtnRowT = 0;
   ALL_ROUND.forEach(p => {
     const rowPcs = ROWS.reduce((s, _, i) => s + (p.byInv[i] || 0), 0);
-    const rowCtn = ctnOf(rowPcs, p.qty);
+    const rowCtn = p.loose ? 0 : ctnOf(rowPcs, p.qty);
     arCtnRowT += rowCtn;
     const num = (col, v) => cell(ws, r, col, v, { font: { size: 9 }, border: BORDER_ALL, alignment: { horizontal: 'center' } });
     // Blank border cells first, then merge, then the name: ExcelJS routes any write inside a
@@ -203,10 +210,11 @@ function writeAllRoundTable(ws, DATA, startRow) {
     for (let c = 2; c <= NAME_SPAN; c++) cell(ws, r, c, '', { border: BORDER_ALL });
     merge(ws, r, 1, r, NAME_SPAN);
     cell(ws, r, 1, p.label, { font: { size: 9 }, border: BORDER_ALL, alignment: { horizontal: 'left', wrapText: true, vertical: 'top' } });
-    num(NAME_SPAN + 1, p.packing === 'bag' ? 'Bag' : 'Carton');
+    num(NAME_SPAN + 1, p.loose ? 'Pieces' : (p.packing === 'bag' ? 'Bag' : 'Carton'));
     num(NAME_SPAN + 2, p.unit === 'PCS' ? 'Pcs' : (p.packing === 'bag' ? 'Bag' : 'Ctn'));
     ROWS.forEach((_, i) => num(NAME_SPAN + 3 + i, round2(displayQty(p.byInv[i] || 0, p))));
-    num(tailStart, round2(displayQty(rowPcs, p))); num(tailStart + 1, p.qty); num(tailStart + 2, round2(rowCtn));
+    if (p.loose) { num(tailStart, round2(rowPcs)); num(tailStart + 1, '—'); num(tailStart + 2, '—'); }
+    else { num(tailStart, round2(displayQty(rowPcs, p))); num(tailStart + 1, p.qty); num(tailStart + 2, round2(rowCtn)); }
     r++;
   });
 
@@ -216,6 +224,14 @@ function writeAllRoundTable(ws, DATA, startRow) {
   ROWS.forEach((_, i) => foot(NAME_SPAN + 3 + i, round2(arCtnByInv[i])));
   foot(tailStart, ''); foot(tailStart + 1, ''); foot(tailStart + 2, round2(arCtnRowT));
   r++;
+  const pcsInv = piecesByInv(DATA), pcsT = round2(pcsInv.reduce((a, b) => a + b, 0));
+  if (pcsT) {
+    for (let c = 2; c <= NAME_SPAN + 2; c++) foot(c, '');
+    merge(ws, r, 1, r, NAME_SPAN + 2); foot(1, 'Total per shop — pieces');
+    ROWS.forEach((_, i) => foot(NAME_SPAN + 3 + i, pcsInv[i]));
+    foot(tailStart, pcsT); foot(tailStart + 1, ''); foot(tailStart + 2, '');
+    r++;
+  }
   return r;
 }
 
@@ -241,7 +257,7 @@ function writeSignaturesAndSummary(ws, DATA, startRow) {
     r++;
   });
 
-  const arCtnByInv = ROWS.map((_, i) => ALL_ROUND.reduce((s, p) => s + ctnOf(p.byInv[i] || 0, p.qty), 0));
+  const arCtnByInv = ROWS.map((_, i) => ALL_ROUND.reduce((s, p) => s + (p.loose ? 0 : ctnOf(p.byInv[i] || 0, p.qty)), 0));
   const arCtnRowT = arCtnByInv.reduce((a, b) => a + b, 0);
   let grandRoundCtn = 0;
   ROWS.forEach(row => { grandRoundCtn += row.pcs.reduce((s, p, j) => s + ctnOf(p, DATA.cols[j].qty), 0); });
@@ -256,8 +272,9 @@ function writeSignaturesAndSummary(ws, DATA, startRow) {
     ['Round items — matrix', round2(arCtnRowT)],
     ['Round items — packed as Carton', round2(pk.cartons)],
     ['Round items — packed as Bag', round2(pk.bags)],
+    ...(pk.pieces ? [['Loose pieces (not packages)', `${round2(pk.pieces)} pcs`]] : []),
     ['Invoices on run', ROWS.length],
-    ['TOTAL PACKAGES LOADED', round2(grand)],
+    ['TOTAL PACKAGES LOADED', withPcs(grand, round2(pk.pieces || 0))],
   ];
   let sr = sectionStart;
   summaryRows.forEach(([label, val], i) => {

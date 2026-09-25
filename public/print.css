@@ -168,3 +168,8 @@ table{border-collapse:collapse;width:100%}
   .sheet{box-shadow:none;width:100%;min-height:auto;padding:0}
   @page{size:A4 landscape;margin:8mm}
 }
+
+/* Loose pieces (frozen items etc.) -- shown next to package counts, never added to them. */
+.pcs-add{font-weight:500;font-size:.82em;color:#1f5f8b;white-space:nowrap}
+.allround tr.loose td{background:#f2f8fc}
+.allround tfoot tr.pcs-row td{color:#1f5f8b}

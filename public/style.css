@@ -318,3 +318,10 @@ tr:hover td{background:#fafbfd;}
   .sidebar{width:64px;} .sidebar .brand span,.sidebar .nav a span.label{display:none;}
   .field-row{flex-direction:column;}
 }
+
+/* ---- loose pieces (packing 'pcs': frozen items etc.) ---- */
+.mx-pack-btn.mx-pack-pcs{background:#e3f0f8;color:#1f5f8b;border-color:#b9d6e8;}
+.mx-unit-btn:disabled{opacity:.6;cursor:not-allowed;}
+.pcs-add{font-weight:500;font-size:.85em;color:#1f5f8b;white-space:nowrap;}
+.mx-pcs-total td{color:#1f5f8b;}
+.badge.info{background:#e3f0f8;color:#1f5f8b;}

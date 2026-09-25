@@ -144,9 +144,9 @@ export default {
   computed: {
     atLimit() { return this.stops.length >= 25; },
     sheetTotals() {
-      let ctns = 0, ri = 0;
-      for (const s of this.stops) { ctns += this.rowCtns(s); ri += this.rowRI(s); }
-      return { invoices: this.stops.length, ctns, ri: round2(ri), pkgs: round2(ctns + ri) };
+      let ctns = 0, ri = 0, pcs = 0;
+      for (const s of this.stops) { ctns += this.rowCtns(s); ri += this.rowRI(s); pcs += this.rowPieces(s); }
+      return { invoices: this.stops.length, ctns, ri: round2(ri), pkgs: round2(ctns + ri), pcs: round2(pcs) };
     },
     autoSaveStatusText() {
       if (this.autoSaveConflict) return 'changed elsewhere — see notice below';
@@ -231,8 +231,18 @@ export default {
     // that gap is expected, not a bug.
     rowRI(stop) {
       let total = 0;
-      for (const ri of stop.round_items) total += Number(ri.qty_ctn) || 0;
+      // loose pieces (packing 'pcs') are not cartons or packages -- counted by rowPieces
+      for (const ri of stop.round_items) if (ri.packing_type !== 'pcs') total += Number(ri.qty_ctn) || 0;
       return total;
+    },
+    rowPieces(stop) {
+      let t = 0;
+      for (const ri of stop.round_items || []) {
+        if (ri.packing_type !== 'pcs') continue;
+        const pr = this.productOf(ri.product_id);
+        t += (Number(ri.qty_ctn) || 0) * ((pr && pr.qty_per_ctn) || 1);
+      }
+      return t;
     },
     rowCtns(stop) { return (Number(stop.ctns_carton) || 0) + (Number(stop.ctns_bag) || 0); },
     rowTotalPkgs(stop) { return round2(this.rowCtns(stop) + this.rowRI(stop)); },
@@ -261,7 +271,9 @@ export default {
         taken_by: s.taken_by || '', ctns_carton: Number(s.ctns_carton) || 0, ctns_bag: Number(s.ctns_bag) || 0, note: s.note || '',
         round_items: (s.round_items || []).map(r => ({
           product_id: r.product_id, qty_ctn: Number(r.qty_ctn) || 0,
-          packing_type: r.packing_type === 'bag' ? 'bag' : 'carton',
+          // all three packing types must survive the save -- this used to know only bag and
+          // carton, silently turning loose pieces back into cartons on every save
+          packing_type: r.packing_type === 'bag' ? 'bag' : (r.packing_type === 'pcs' ? 'pcs' : 'carton'),
           entry_unit: r.entry_unit === 'PCS' ? 'PCS' : 'CTN',
         })),
       }));
@@ -452,7 +464,13 @@ export default {
           const qtyPerCtn = (p && p.qty_per_ctn) || 1;
           const isCarton = /^C/i.test(r.uom || '');
           const qty_ctn = isCarton ? Number(r.qty) || 0 : (Number(r.qty) || 0) / qtyPerCtn;
-          return { product_id: r.mapped_product_id, qty_ctn: round2(qty_ctn), packing_type: (p && p.packing_type) || 'carton' };
+          // Unrounded, like manual entry: rounding here turned 25 pieces at 12/ctn into 24.96.
+          // A pieces-default product stays Pieces only in the All Round table; the top table's
+          // preset columns are carton/bag-based.
+          const def = (p && p.packing_type) || 'carton';
+          const inTopTable = (this.frequentColumns || []).some(c => c.product_id === r.mapped_product_id);
+          const packing_type = def === 'pcs' && inTopTable ? 'carton' : def;
+          return { product_id: r.mapped_product_id, qty_ctn, packing_type, ...(packing_type === 'pcs' ? { entry_unit: 'PCS' } : {}) };
         });
       const stop = {
         _uid: uid(),
@@ -550,7 +568,7 @@ export default {
     <span>Invoices: <b>{{ sheetTotals.invoices }}</b> / 25</span>
     <span>Total CTNS: <b>{{ sheetTotals.ctns }}</b></span>
     <span>Total RI: <b>{{ sheetTotals.ri }}</b></span>
-    <span>TOTAL PACKAGES: <b>{{ sheetTotals.pkgs }}</b></span>
+    <span>TOTAL PACKAGES: <b>{{ sheetTotals.pkgs }}</b><span class="pcs-add" v-if="sheetTotals.pcs"> + {{ sheetTotals.pcs }} loose pcs</span></span>
   </div>
   `,
 };

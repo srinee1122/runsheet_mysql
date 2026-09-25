@@ -157,7 +157,7 @@ export default {
       for (const p of this.matrixProductRows) {
         const stored = this.storedRoundItemFor(p.id);
         if (!(p.id in this.rowPacking)) this.rowPacking[p.id] = (stored && stored.packing_type) || p.packing_type || 'carton';
-        if (!(p.id in this.rowUnit)) this.rowUnit[p.id] = (stored && stored.entry_unit) || (p.entry_unit === 'PCS' ? 'PCS' : 'CTN');
+        if (!(p.id in this.rowUnit)) this.rowUnit[p.id] = this.rowPacking[p.id] === 'pcs' ? 'PCS' : ((stored && stored.entry_unit) || (p.entry_unit === 'PCS' ? 'PCS' : 'CTN'));
       }
     },
 
@@ -169,7 +169,7 @@ export default {
     // gap is expected, not a bug.
     rowRI(stop) {
       let t = 0;
-      for (const ri of stop.round_items || []) t += Number(ri.qty_ctn) || 0;
+      for (const ri of stop.round_items || []) if (ri.packing_type !== 'pcs') t += Number(ri.qty_ctn) || 0;
       return t;
     },
     // RI split by packing type, for the RI Carton/Bag columns — same figures the Load
@@ -177,7 +177,7 @@ export default {
     // just per row here.
     riCarton(stop) {
       let t = 0;
-      for (const ri of stop.round_items || []) if (ri.packing_type !== 'bag') t += Number(ri.qty_ctn) || 0;
+      for (const ri of stop.round_items || []) if (ri.packing_type !== 'bag' && ri.packing_type !== 'pcs') t += Number(ri.qty_ctn) || 0;
       return round2(t);
     },
     riBag(stop) {
@@ -186,6 +186,16 @@ export default {
       return round2(t);
     },
     rowCtns(stop) { return (Number(stop.ctns_carton) || 0) + (Number(stop.ctns_bag) || 0); },
+    // Loose pieces on this stop, in pieces -- shown beside the package total, never added.
+    rowPieces(stop) {
+      let t = 0;
+      for (const ri of stop.round_items || []) {
+        if (ri.packing_type !== 'pcs') continue;
+        const pr = this.productOf(ri.product_id);
+        t += (Number(ri.qty_ctn) || 0) * ((pr && pr.qty_per_ctn) || 1);
+      }
+      return round2(t);
+    },
     rowTotalPkgs(stop) { return round2(this.rowCtns(stop) + this.rowRI(stop)); },
 
     entryUnitFor(product) {
@@ -234,12 +244,18 @@ export default {
       const p = this.productOf(productId);
       const qtyPerCtn = (p && p.qty_per_ctn) || 1;
       const qty_ctn = this.entryUnitFor(p) === 'PCS' ? val / qtyPerCtn : val;
+      // Stored UNROUNDED. Rounding the cartons figure to 2 decimals meant 8 pieces at 6/ctn
+      // became 1.33 cartons, which printed back as 7.98 pieces. Exact storage converts back
+      // to exactly what was typed; every display already rounds on its own.
       if (idx >= 0) {
-        stop.round_items[idx].qty_ctn = round2(qty_ctn);
+        stop.round_items[idx].qty_ctn = qty_ctn;
         stop.round_items[idx].entry_unit = this.entryUnitFor(p);
-      } else stop.round_items.push({ product_id: productId, qty_ctn: round2(qty_ctn), packing_type: packingDefault || 'carton', entry_unit: this.entryUnitFor(p) });
+      } else stop.round_items.push({ product_id: productId, qty_ctn, packing_type: packingDefault || 'carton', entry_unit: this.entryUnitFor(p) });
     },
-    columnPackingDefault(productId) { return (this.productOf(productId) || {}).packing_type || 'carton'; },
+    // The top table's preset columns are carton/bag-based; loose pieces belong in the All
+    // Round table below. A product that defaults to pieces is counted as carton up here.
+    columnPackingDefault(productId) { const t = (this.productOf(productId) || {}).packing_type; return t === 'bag' ? 'bag' : 'carton'; },
+    isLooseRow(productId) { return this.rowPacking[productId] === 'pcs'; },
 
     // Totals always sum the canonical stored cartons, not the display unit — a product
     // entered in pieces and one entered in cartons are still comparable this way, and it
@@ -254,7 +270,12 @@ export default {
     // signal that something was mistyped, not something to smooth away.
     matrixColTotal(stop) {
       let t = 0;
-      for (const p of this.matrixProductRows) t += this.rawQtyCtn(stop, p.id);
+      for (const p of this.matrixProductRows) if (!this.isLooseRow(p.id)) t += this.rawQtyCtn(stop, p.id);
+      return round2(t);
+    },
+    matrixColPieces(stop) {
+      let t = 0;
+      for (const p of this.matrixProductRows) if (this.isLooseRow(p.id)) t += this.rawQtyCtn(stop, p.id) * (p.qty_per_ctn || 1);
       return round2(t);
     },
 
@@ -270,9 +291,13 @@ export default {
     },
     // The whole-unit label always matches the row's current packing type — if it's packed
     // as bags, "one whole unit" means one bag, not one carton.
-    packLabel(productId) { return this.rowPacking[productId] === 'bag' ? 'Bag' : 'Ctn'; },
+    packLabel(productId) { const t = this.rowPacking[productId]; return t === 'bag' ? 'Bag' : (t === 'pcs' ? 'Pcs' : 'Ctn'); },
+    // Carton -> Bag -> Pieces -> Carton. Pieces = loose items (frozen etc.) that travel as
+    // individual pieces: entered and shown in pieces, never counted as cartons or packages.
     toggleRowPacking(productId) {
-      this.setRowPacking(productId, this.rowPacking[productId] === 'bag' ? 'carton' : 'bag');
+      const next = { carton: 'bag', bag: 'pcs', pcs: 'carton' }[this.rowPacking[productId] || 'carton'];
+      this.setRowPacking(productId, next);
+      if (next === 'pcs') this.applyRowUnit(productId, 'PCS');
     },
     // Changing a matrix row's entry unit re-renders every existing cell in that row from the
     // canonical stored cartons figure, converted into the new unit — otherwise a cell that
@@ -296,6 +321,7 @@ export default {
       }
     },
     toggleRowUnit(productId) {
+      if (this.isLooseRow(productId)) return; // loose pieces are always entered in pieces
       const current = this.entryUnitFor(this.productOf(productId));
       this.applyRowUnit(productId, current === 'PCS' ? 'CTN' : 'PCS');
     },
@@ -310,7 +336,7 @@ export default {
       if (!p) return;
       this.matrixProductRows.push(p);
       this.rowPacking[p.id] = p.packing_type || 'carton';
-      this.rowUnit[p.id] = p.entry_unit === 'PCS' ? 'PCS' : 'CTN';
+      this.rowUnit[p.id] = (p.packing_type === 'pcs' || p.entry_unit === 'PCS') ? 'PCS' : 'CTN';
       // Deferred to the next tick: resetting this in the same reactive flush that detected
       // it becoming non-null would make the null → id → null transition invisible to
       // ProductPicker's own modelValue watcher (Vue only sees the net "no change"), so its
@@ -601,7 +627,7 @@ export default {
           <td v-if="!columns.length" class="hint center">&mdash;</td>
           <td class="center mono mx-cell-ri">{{ riCarton(stop) }}</td>
           <td class="center mono mx-cell-ri">{{ riBag(stop) }}</td>
-          <td class="center mono" style="font-weight:600;">{{ rowTotalPkgs(stop) }}</td>
+          <td class="center mono" style="font-weight:600;">{{ rowTotalPkgs(stop) }}<span class="pcs-add" v-if="rowPieces(stop)"> +{{ rowPieces(stop) }} pcs</span></td>
           <td class="center">
             <button class="ghost small" @click="$emit('move-stop', i, 'up')" :disabled="i===0" title="Move up">&uarr;</button>
             <button class="ghost small" @click="$emit('move-stop', i, 'down')" :disabled="i===stops.length-1" title="Move down">&darr;</button>
@@ -651,15 +677,15 @@ export default {
               <ProductPicker class="mx-rowlabel-picker" :key="row.id + '-' + (rowPickerResetSeq[row.id] || 0)"
                 :products="productsForRow(row.id)" :modelValue="row.id"
                 @update:modelValue="changeRowProduct(row.id, $event)" @keydown="handleAllRoundKeyNav($event)" />
-              <button type="button" class="mx-pack-btn" :class="rowPacking[row.id]==='bag' ? 'mx-pack-bag' : 'mx-pack-carton'"
-                @click="toggleRowPacking(row.id)" :title="'Packing: ' + packLabel(row.id) + ' — click to switch'">{{ packLabel(row.id) }}</button>
+              <button type="button" class="mx-pack-btn" :class="rowPacking[row.id]==='bag' ? 'mx-pack-bag' : (rowPacking[row.id]==='pcs' ? 'mx-pack-pcs' : 'mx-pack-carton')"
+                @click="toggleRowPacking(row.id)" :title="'Packing: ' + packLabel(row.id) + ' — click to switch (Carton → Bag → Pieces)'">{{ packLabel(row.id) }}</button>
             </div>
             <div class="mx-tooltip mx-tooltip-left">Product: <b>{{ row.name }}</b></div>
           </td>
           <td class="mx-unit-cell">
             <button type="button" class="mx-unit-btn"
               :class="entryUnitFor(row)==='PCS' ? 'mx-unit-pcs' : (rowPacking[row.id]==='bag' ? 'mx-unit-bag' : 'mx-unit-carton')"
-              @click="toggleRowUnit(row.id)" :title="'Entry unit — click to switch'">{{ entryUnitFor(row)==='PCS' ? 'Pcs' : packLabel(row.id) }}</button>
+              @click="toggleRowUnit(row.id)" :disabled="isLooseRow(row.id)" :title="isLooseRow(row.id) ? 'Loose pieces are always entered in pieces' : 'Entry unit — click to switch'">{{ entryUnitFor(row)==='PCS' ? 'Pcs' : packLabel(row.id) }}</button>
           </td>
           <td v-for="stop in stops" :key="stop._uid+'-'+row.id" class="mx-tooltip-host-focus">
             <input type="number" min="0" :step="cellStep(row)" :value="cellValue(stop, row.id)"
@@ -669,7 +695,7 @@ export default {
               Product: <b>{{ row.name }}</b><br>Shop: <b>{{ stop.customer || 'not entered yet' }}</b>
             </div>
           </td>
-          <td class="center mono">{{ row.qty_per_ctn }}</td>
+          <td class="center mono">{{ isLooseRow(row.id) ? '—' : row.qty_per_ctn }}</td>
           <td class="center"><button class="ghost small" @click="removeProductRow(row.id)" title="Remove row">&times;</button></td>
         </tr>
         <tr>
@@ -685,6 +711,11 @@ export default {
         <tr>
           <td colspan="2" class="hint">Column total (ctn)</td>
           <td v-for="stop in stops" :key="stop._uid+'tot'" class="center mono">{{ matrixColTotal(stop) }}</td>
+          <td colspan="2"></td>
+        </tr>
+        <tr v-if="matrixProductRows.some(p => isLooseRow(p.id))" class="mx-pcs-total">
+          <td colspan="2" class="hint">Column total (pcs)</td>
+          <td v-for="stop in stops" :key="stop._uid+'pcs'" class="center mono">{{ matrixColPieces(stop) || '·' }}</td>
           <td colspan="2"></td>
         </tr>
       </tfoot>

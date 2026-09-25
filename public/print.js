@@ -49,8 +49,16 @@ import { buildRunsheetData, ctnOf } from './lib/runsheet-data.js';
     const ROWS = DATA.rows;
     const ALL_ROUND = DATA.all_round;
 
+    // Loose-pieces rows (packing 'pcs': frozen items etc.) never become cartons. They're
+    // kept out of every carton figure and tallied separately in pieces, per shop.
     const arCtnByInv = ROWS.map((_, i) =>
-      ALL_ROUND.reduce((s, p) => s + ctnOf(p.byInv[i] || 0, p.qty), 0));
+      ALL_ROUND.reduce((s, p) => s + (p.loose ? 0 : ctnOf(p.byInv[i] || 0, p.qty)), 0));
+    const arPcsByInv = ROWS.map((_, i) =>
+      round2(ALL_ROUND.reduce((s, p) => s + (p.loose ? (p.byInv[i] || 0) : 0), 0)));
+    const piecesT = round2(arPcsByInv.reduce((a, b) => a + b, 0));
+    // "15" or "15 +5 pcs" -- pieces shown alongside packages, never added to them
+    const withPcs = (pkgs, pcs) => `${round2(pkgs)}${pcs ? `<span class="pcs-add"> +${pcs} pcs</span>` : ''}`;
+    const withPcsText = (pkgs, pcs) => `${round2(pkgs)}${pcs ? ` +${pcs} pcs` : ''}`;
 
     // r.pcs (built in buildData) is always tracked internally in pieces, regardless of
     // what gets displayed — this is purely a display-time conversion, using the exact
@@ -99,12 +107,12 @@ import { buildRunsheetData, ctnOf } from './lib/runsheet-data.js';
     const pre = ROWS.map((r, i) => {
       const otherC = Number(r.ctn != null ? r.ctn : r.other) || 0;
       const riC = r.pcs.reduce((s, p, j) => s + ctnOf(p, COLS[j].qty), 0) + arCtnByInv[i];
-      return { otherC, riC, total: otherC + riC };
+      return { otherC, riC, total: otherC + riC, pcs: arPcsByInv[i] };
     });
     const sumOf = (k) => pre.reduce((s, x) => s + x[k], 0);
     const ctnsW = monoW(longest([...pre.map(x => round2(x.otherC)), round2(sumOf('otherC'))]), 40);
     const riW = monoW(longest([...pre.map(x => round2(x.riC)), round2(sumOf('riC'))]), 30);
-    const totW = monoW(longest([...pre.map(x => round2(x.total)), round2(sumOf('total'))]), 40);
+    const totW = monoW(longest([...pre.map(x => withPcsText(x.total, x.pcs)), withPcsText(sumOf('total'), piecesT)]), 40);
     // Fixed table layout takes column widths from the FIRST row — and the first row here is
     // the "ROUND ITEMS" group header with colspans, so widths on the second header row were
     // silently ignored (every column came out equal). A <colgroup> is what fixed layout
@@ -145,7 +153,7 @@ import { buildRunsheetData, ctnOf } from './lib/runsheet-data.js';
         <td class="txt">${r.cust}</td><td class="by">${r.by}</td>
         <td class="num"></td><td class="num"></td>`;
       r.pcs.forEach((p, j) => h += cell(displayQty(p, COLS[j])));
-      h += cell(otherC) + cell(riC) + `<td class="tot-col">${round2(total)}</td></tr>`;
+      h += cell(otherC) + cell(riC) + `<td class="tot-col">${withPcs(total, arPcsByInv[i])}</td></tr>`;
     });
 
     const otherT = ROWS.reduce((s, r) => s + (Number(r.ctn != null ? r.ctn : r.other) || 0), 0);
@@ -155,10 +163,10 @@ import { buildRunsheetData, ctnOf } from './lib/runsheet-data.js';
       <tr><td colspan="5" class="lbl">TOTAL ROUND ITEMS</td>
           <td></td><td></td>
           ${colPcs.map((p, j) => `<td>${round2(displayQty(p, COLS[j]))}</td>`).join("")}
-          <td>${round2(otherT)}</td><td>${round2(riT)}</td><td class="tot-col">${round2(sheetTotal)}</td></tr>
+          <td>${round2(otherT)}</td><td>${round2(riT)}</td><td class="tot-col">${withPcs(sheetTotal, piecesT)}</td></tr>
       <tr class="ctn-row"><td colspan="7" class="lbl">CONVERTED — CARTONS / BAGS &nbsp;(pcs ÷ qty/ctn)</td>
           ${colPcs.map((p, j) => `<td>${round2(ctnOf(p, COLS[j].qty))}</td>`).join("")}
-          <td>${round2(otherT)}</td><td>${round2(riT)}</td><td class="tot-col">${round2(sheetTotal)}</td></tr>
+          <td>${round2(otherT)}</td><td>${round2(riT)}</td><td class="tot-col">${withPcs(sheetTotal, piecesT)}</td></tr>
     </tfoot>`;
     document.getElementById("mainTable").innerHTML = h;
     document.getElementById("cashTot").innerHTML = "$ ____________";
@@ -172,16 +180,26 @@ import { buildRunsheetData, ctnOf } from './lib/runsheet-data.js';
     let arCtnRowT = 0;
     ALL_ROUND.forEach(p => {
       const rowPcs = ROWS.reduce((s, _, i) => s + (p.byInv[i] || 0), 0);
-      const rowCtn = ctnOf(rowPcs, p.qty);
+      const rowCtn = p.loose ? 0 : ctnOf(rowPcs, p.qty);
       arCtnRowT += rowCtn;
-      a += `<tr><td class="txt">${p.label}<span class="pack"> &middot; ${p.packing === 'bag' ? 'Bag' : 'Carton'}</span></td>`;
+      const packName = p.loose ? 'Pieces' : (p.packing === 'bag' ? 'Bag' : 'Carton');
+      a += `<tr class="${p.loose ? 'loose' : ''}"><td class="txt">${p.label}<span class="pack"> &middot; ${packName}</span></td>`;
       a += `<td>${p.unit === 'PCS' ? 'Pcs' : (p.packing === 'bag' ? 'Bag' : 'Ctn')}</td>`;
       ROWS.forEach((_, i) => { const v = round2(displayQty(p.byInv[i] || 0, p)); a += `<td class="${v === 0 ? 'zero' : ''}">${v === 0 ? '·' : v}</td>`; });
-      a += `<td class="rt">${round2(displayQty(rowPcs, p))}</td><td>${p.qty}</td><td class="rt">${round2(rowCtn)}</td></tr>`;
+      // loose pieces: no pieces-per-carton and no carton figure -- they never become cartons
+      a += p.loose
+        ? `<td class="rt">${round2(rowPcs)}</td><td>—</td><td>—</td></tr>`
+        : `<td class="rt">${round2(displayQty(rowPcs, p))}</td><td>${p.qty}</td><td class="rt">${round2(rowCtn)}</td></tr>`;
     });
     a += `</tbody><tfoot><tr><td colspan="2" class="lbl">Total per shop — cartons</td>`;
     ROWS.forEach((_, i) => a += `<td>${round2(arCtnByInv[i]) || "·"}</td>`);
-    a += `<td></td><td></td><td class="rt">${round2(arCtnRowT)}</td></tr></tfoot>`;
+    a += `<td></td><td></td><td class="rt">${round2(arCtnRowT)}</td></tr>`;
+    if (piecesT) {
+      a += `<tr class="pcs-row"><td colspan="2" class="lbl">Total per shop — pieces</td>`;
+      ROWS.forEach((_, i) => a += `<td>${arPcsByInv[i] || "·"}</td>`);
+      a += `<td class="rt">${piecesT}</td><td></td><td></td></tr>`;
+    }
+    a += `</tfoot>`;
     document.getElementById("allRound").innerHTML = a;
     // Past 15 invoices the matrix can't fit beside the two side panels at normal size, so it
     // tightens: smaller cell padding/font and a slightly narrower Product column. Keeps the
@@ -205,8 +223,9 @@ import { buildRunsheetData, ctnOf } from './lib/runsheet-data.js';
       <tr><td class="lbl">Round items — matrix</td><td class="val">${round2(arCtnRowT)}</td></tr>
       <tr><td class="lbl">Round items — packed as Carton</td><td class="val">${round2(pk.cartons)}</td></tr>
       <tr><td class="lbl">Round items — packed as Bag</td><td class="val">${round2(pk.bags)}</td></tr>
+      ${piecesT ? `<tr><td class="lbl">Loose pieces (not packages)</td><td class="val">${piecesT} pcs</td></tr>` : ''}
       <tr><td class="lbl">Invoices on run</td><td class="val">${ROWS.length}</td></tr>
-      <tr class="final"><td class="lbl">TOTAL PACKAGES LOADED</td><td class="val">${round2(grand)}</td></tr>`;
+      <tr class="final"><td class="lbl">TOTAL PACKAGES LOADED</td><td class="val">${round2(grand)}${piecesT ? `<div class="pcs-add">+ ${piecesT} pcs loose</div>` : ''}</td></tr>`;
   }
 
   /* scale sheet to fit narrow screens */

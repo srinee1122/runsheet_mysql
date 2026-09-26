@@ -1,10 +1,12 @@
 import { Api } from '../lib/api.js';
-import { MODULES } from '../lib/modules.js';
+import { MODULES, ACTIONS } from '../lib/modules.js';
 
 export default {
+  inject: ['auth'],
   data() {
-    return { users: [], loading: true, savingUid: null, modules: MODULES, diag: null, diagHistory: [], diagLoading: false };
+    return { users: [], loading: true, savingUid: null, modules: MODULES, actions: ACTIONS, diag: null, diagHistory: [], diagLoading: false };
   },
+  computed: { canGrantSuper() { return !!(this.auth.permissions && this.auth.permissions.isSuper); } },
   async mounted() {
     await this.reload();
   },
@@ -29,7 +31,7 @@ export default {
     async save(u) {
       this.savingUid = u.uid;
       try {
-        await Api.put(`/api/users/${u.uid}`, { isAdmin: u.isAdmin, modules: u.modules });
+        await Api.put(`/api/users/${u.uid}`, { isAdmin: u.isAdmin, isSuper: u.isSuper, modules: u.modules, actions: u.actions });
       } catch (e) {
         alert(e.message);
         await this.reload(); // revert to server truth if the save was rejected (e.g. last-admin guard)
@@ -42,31 +44,51 @@ export default {
   <div class="panel">
     <h1>Users &amp; Permissions</h1>
     <p class="hint" style="margin-top:-6px;">
-      New sign-ins appear here automatically with no access — tick the pages each person should
-      see, or make them an admin to grant everything (including managing this page itself).
-      Changes save as soon as you change a checkbox.
+      New sign-ins appear here automatically with no access. For each person, tick the
+      <b>pages</b> they can open and the <b>actions</b> they can take. <b>Admin</b> gives every
+      page and action. <b>Super user</b> also manages this page and can edit a runsheet after
+      it's locked. Changes save as soon as you tick a box.
     </p>
 
-    <table v-if="!loading" style="margin-top:14px;">
-      <thead><tr>
-        <th style="text-align:left;">Person</th>
-        <th class="center">Admin</th>
-        <th v-for="m in modules" :key="m.key" class="center">{{ m.label }}</th>
-      </tr></thead>
+    <!-- 15 columns: compact styling keeps it inside a laptop screen; on anything narrower it
+         scrolls sideways within the panel instead of spilling out of it -->
+    <div class="perm-scroll" v-if="!loading">
+    <table class="perm-table" style="margin-top:14px;">
+      <thead>
+        <tr class="perm-groups">
+          <th></th><th colspan="2"></th>
+          <th :colspan="modules.length" class="center perm-group">Pages</th>
+          <th :colspan="actions.length" class="center perm-group">Actions</th>
+        </tr>
+        <tr>
+          <th style="text-align:left;">Person</th>
+          <th class="center" title="Every page and action, but not this page">Admin</th>
+          <th class="center" title="Everything, plus managing permissions and editing locked runsheets">Super user</th>
+          <th v-for="m in modules" :key="m.key" class="center">{{ m.label }}</th>
+          <th v-for="a in actions" :key="a.key" class="center" :title="a.hint">{{ a.label }}</th>
+        </tr>
+      </thead>
       <tbody>
         <tr v-for="u in users" :key="u.uid">
           <td>
-            <div style="font-weight:500;">{{ u.displayName || u.email || u.uid }}</div>
-            <div class="hint" v-if="u.displayName && u.email">{{ u.email }}</div>
+            <div style="font-weight:500;" v-if="u.displayName">{{ u.displayName }}</div>
+            <div :style="u.displayName ? '' : 'font-weight:500;'" :class="{ hint: !!u.displayName }" v-if="u.email">
+              {{ u.email.split('@')[0] }}<wbr><span class="nowrap">@{{ u.email.split('@').slice(1).join('@') }}</span></div>
+            <div style="font-weight:500;" v-if="!u.displayName && !u.email">{{ u.uid }}</div>
           </td>
-          <td class="center"><input type="checkbox" v-model="u.isAdmin" @change="save(u)" /></td>
+          <td class="center"><input type="checkbox" v-model="u.isAdmin" :disabled="u.isSuper" @change="save(u)" /></td>
+          <td class="center"><input type="checkbox" v-model="u.isSuper" :disabled="!canGrantSuper" @change="save(u)" /></td>
           <td v-for="m in modules" :key="m.key" class="center">
             <input type="checkbox" v-model="u.modules[m.key]" :disabled="u.isAdmin" @change="save(u)" />
           </td>
+          <td v-for="a in actions" :key="a.key" class="center perm-action">
+            <input type="checkbox" v-model="u.actions[a.key]" :disabled="u.isAdmin" @change="save(u)" />
+          </td>
         </tr>
-        <tr v-if="!users.length"><td :colspan="modules.length + 2" class="empty">No one has signed in yet.</td></tr>
+        <tr v-if="!users.length"><td :colspan="modules.length + actions.length + 3" class="empty">No one has signed in yet.</td></tr>
       </tbody>
     </table>
+    </div>
     <p class="hint" v-if="savingUid">Saving…</p>
 
     <h2 style="margin-top:32px;">Server Diagnostics</h2>

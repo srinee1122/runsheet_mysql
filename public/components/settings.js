@@ -7,8 +7,11 @@ export default {
     return {
       products: [],
       columns: [], // [{ product_id, code }]
-      clerks: [],
-      newClerk: '',
+      // delivery companies and staff (used on the Status board's handover)
+      companies: [], staff: [],
+      newCompany: { name: '', kind: 'thirdparty' },
+      newStaff: { name: '', company_id: '', roles: { driver: false, del_man: false, puller: false, crew: false } },
+      ROLES: [{ key: 'driver', label: 'Driver' }, { key: 'del_man', label: 'Delivery man' }, { key: 'puller', label: 'Puller' }, { key: 'crew', label: 'Loading crew' }],
       saved: false,
     };
   },
@@ -16,7 +19,7 @@ export default {
     this.products = await Api.get('/api/products');
     const cols = await Api.get('/api/settings/frequent-columns');
     this.columns = cols.length ? cols : [];
-    this.clerks = await Api.get('/api/settings/clerks');
+    await this.loadPeople();
   },
   methods: {
     productById(id) { return this.products.find(p => p.id === id); },
@@ -45,23 +48,32 @@ export default {
       await Api.put(`/api/products/${productId}`, { ...p, entry_unit });
       p.entry_unit = entry_unit;
     },
-    async removeClerk(name) {
-      const next = this.clerks.filter(c => c !== name);
-      await Api.put('/api/settings/clerks', { names: next });
-      this.clerks = next;
+    // ---- delivery companies & staff ----
+    async loadPeople() {
+      [this.companies, this.staff] = await Promise.all([Api.get('/api/companies'), Api.get('/api/staff')]);
     },
-    async addClerk() {
-      const name = this.newClerk.trim();
-      if (!name) return;
-      const next = [...new Set([...this.clerks, name])];
-      await Api.put('/api/settings/clerks', { names: next });
-      this.clerks = next;
-      this.newClerk = '';
+    async run(fn) { try { await fn(); } catch (e) { alert(e.message); } await this.loadPeople(); },
+    addCompany() {
+      const c = this.newCompany; if (!c.name.trim()) return;
+      this.run(async () => { await Api.post('/api/companies', c); this.newCompany = { name: '', kind: 'thirdparty' }; });
     },
+    saveCompany(c) { this.run(() => Api.put(`/api/companies/${c.id}`, c)); },
+    removeCompany(c) {
+      const n = this.staff.filter(s => s.company_id === c.id).length;
+      if (!confirm(`Delete ${c.name}?` + (n ? `\n\n${n} staff member(s) will be left without a company.` : '') + `\n\nRunsheets already handed over keep the company name they were recorded with. To stop offering it but keep it, untick Active instead.`)) return;
+      this.run(() => Api.delete(`/api/companies/${c.id}`));
+    },
+    addStaff() {
+      const s = this.newStaff; if (!s.name.trim()) return;
+      this.run(async () => { await Api.post('/api/staff', { ...s, company_id: s.company_id || null });
+        this.newStaff = { name: '', company_id: '', roles: { driver: false, del_man: false, puller: false, crew: false } }; });
+    },
+    saveStaff(p) { this.run(() => Api.put(`/api/staff/${p.id}`, { ...p, company_id: p.company_id || null })); },
+    removeStaff(p) { if (confirm(`Remove ${p.name} from the staff list?`)) this.run(() => Api.delete(`/api/staff/${p.id}`)); },
   },
   template: `
   <div class="page-head">
-    <div><h1>Settings</h1><div class="sub">Frequent round-item columns and the clerk name list.</div></div>
+    <div><h1>Settings</h1><div class="sub">Frequent round-item columns, delivery companies and staff.</div></div>
   </div>
 
   <div class="panel">
@@ -109,16 +121,50 @@ export default {
   </div>
 
   <div class="panel">
-    <h2 style="margin-top:0;font-size:15px;">Clerk names</h2>
-    <p class="hint">Names offered on the login/switch-user screen so runsheets record who built them.</p>
-    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;">
-      <span v-for="c in clerks" :key="c" class="ri-chip">{{ c }} <button @click="removeClerk(c)">&times;</button></span>
-      <span v-if="!clerks.length" class="hint">No clerks added yet.</span>
-    </div>
-    <div style="display:flex;gap:8px;max-width:340px;">
-      <input type="text" v-model="newClerk" @keyup.enter="addClerk" placeholder="Add a clerk name" />
-      <button class="primary" @click="addClerk">Add</button>
-    </div>
+    <h2 style="margin-top:0;font-size:15px;">Delivery companies
+      <span class="hint">(who takes a runsheet out, and so who we pay — picked at handover through the driver)</span></h2>
+    <table class="set-table">
+      <thead><tr><th>Company</th><th>Type</th><th class="center">Active</th><th></th></tr></thead>
+      <tbody>
+        <tr v-for="c in companies" :key="c.id" :class="{ inactive: !c.active }">
+          <td><input type="text" v-model="c.name" @change="saveCompany(c)" /></td>
+          <td><select v-model="c.kind" @change="saveCompany(c)"><option value="inhouse">In-house</option><option value="thirdparty">Third-party</option></select></td>
+          <td class="center"><input type="checkbox" v-model="c.active" @change="saveCompany(c)" title="Untick to stop offering it, while keeping it for history" /></td>
+          <td class="right"><button class="ghost small danger" @click="removeCompany(c)">Delete</button></td>
+        </tr>
+        <tr class="set-add">
+          <td><input type="text" v-model="newCompany.name" placeholder="New company name" @keyup.enter="addCompany" /></td>
+          <td><select v-model="newCompany.kind"><option value="inhouse">In-house</option><option value="thirdparty">Third-party</option></select></td>
+          <td></td><td class="right"><button class="primary small" @click="addCompany">Add</button></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2 style="margin-top:0;font-size:15px;">Staff
+      <span class="hint">(offered on the Status board's handover — each dropdown lists only the people with that role; any other name can still be typed in)</span></h2>
+    <table class="set-table">
+      <thead><tr><th>Name</th><th>Company</th><th v-for="r in ROLES" :key="r.key" class="center">{{ r.label }}</th><th class="center">Active</th><th></th></tr></thead>
+      <tbody>
+        <tr v-for="p in staff" :key="p.id" :class="{ inactive: !p.active }">
+          <td><input type="text" v-model="p.name" @change="saveStaff(p)" /></td>
+          <td><select v-model="p.company_id" @change="saveStaff(p)"><option :value="null">—</option>
+            <option v-for="c in companies" :key="c.id" :value="c.id">{{ c.name }}{{ c.active ? '' : ' (archived)' }}</option></select></td>
+          <td v-for="r in ROLES" :key="r.key" class="center"><input type="checkbox" v-model="p.roles[r.key]" @change="saveStaff(p)" /></td>
+          <td class="center"><input type="checkbox" v-model="p.active" @change="saveStaff(p)" /></td>
+          <td class="right"><button class="ghost small danger" @click="removeStaff(p)">Remove</button></td>
+        </tr>
+        <tr class="set-add">
+          <td><input type="text" v-model="newStaff.name" placeholder="New name" @keyup.enter="addStaff" /></td>
+          <td><select v-model="newStaff.company_id"><option value="">—</option>
+            <option v-for="c in companies.filter(c => c.active)" :key="c.id" :value="c.id">{{ c.name }}</option></select></td>
+          <td v-for="r in ROLES" :key="r.key" class="center"><input type="checkbox" v-model="newStaff.roles[r.key]" /></td>
+          <td></td><td class="right"><button class="primary small" @click="addStaff">Add</button></td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="hint" v-if="staff.some(p => !Object.values(p.roles).some(Boolean))">Someone with no role ticked isn't offered in any dropdown.</p>
   </div>
   `,
 };

@@ -9,6 +9,7 @@ import ProductsPage from './components/products.js';
 import CustomersPage from './components/customers.js';
 import SettingsPage from './components/settings.js';
 import HistoryPage from './components/history.js';
+import StatusBoardPage from './components/status-board.js';
 import LoginPage from './components/login.js';
 import UsersPage from './components/users.js';
 
@@ -96,7 +97,8 @@ const routes = [
   { path: '/customers', component: CustomersPage, meta: { module: 'customers' } },
   { path: '/settings', component: SettingsPage, meta: { module: 'settings' } },
   { path: '/history', component: HistoryPage, meta: { module: 'history' } },
-  { path: '/users', component: UsersPage, meta: { admin: true } },
+  { path: '/status', component: StatusBoardPage, meta: { module: 'status' } },
+  { path: '/users', component: UsersPage, meta: { superOnly: true } },
 ];
 const router = createRouter({ history: createWebHashHistory(), routes });
 
@@ -124,6 +126,7 @@ router.beforeEach(async (to) => {
   if (to.meta.authedOnly) return true; // signed in is enough (e.g. /no-access itself)
   const perms = authState.permissions;
   if (to.meta.admin) return (perms && perms.isAdmin) ? true : fallbackRoute();
+  if (to.meta.superOnly) return (perms && perms.isSuper) ? true : fallbackRoute();
   if (to.meta.module) {
     const ok = perms && (perms.isAdmin || perms.modules[to.meta.module]);
     return ok ? true : fallbackRoute();
@@ -150,7 +153,7 @@ const RootApp = {
             <router-link v-if="auth.permissions && (auth.permissions.isAdmin || auth.permissions.modules[m.key])"
               :to="'/' + m.key"><span class="label">{{ m.label }}</span></router-link>
           </template>
-          <router-link v-if="auth.permissions && auth.permissions.isAdmin" to="/users"><span class="label">Users &amp; Permissions</span></router-link>
+          <router-link v-if="auth.permissions && auth.permissions.isSuper" to="/users"><span class="label">Users &amp; Permissions</span></router-link>
         </nav>
         <div class="user-pill">
           <span>Signed in as</span><br/>
@@ -167,4 +170,7 @@ const RootApp = {
 
 const app = createApp(RootApp);
 app.use(router);
+// Components that need the signed-in user's permissions (Builder locks/status actions,
+// Users page super-user toggle) inject this rather than each fetching /api/me again.
+app.provide('auth', authState);
 app.mount('#app');

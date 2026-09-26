@@ -77,6 +77,70 @@ async function ensureColumns(table, columns) {
 
 async function migrate() {
   for (const [table, columns] of Object.entries(MIGRATIONS)) await ensureColumns(table, columns);
+  await backfillStatusAndInvoices();
+  await defaultActionPermissions();
+  await staffFromOldNameList();
+}
+
+// One-time: the old flat staff-name list (settings key 'clerks') becomes rows in the staff
+// table, each with every role ticked so they keep appearing in every dropdown until someone
+// sets their real roles in Settings. The old list itself is left untouched.
+const STAFF_FLAG = 'migration_staff_v1';
+async function staffFromOldNameList() {
+  const done = await one('SELECT value FROM settings WHERE `key` = ?', [STAFF_FLAG]);
+  if (done) return;
+  const names = await getSetting('clerks', []);
+  let n = 0;
+  for (const raw of Array.isArray(names) ? names : []) {
+    const name = String(raw || '').trim().slice(0, 120);
+    if (!name) continue;
+    const r = await run('INSERT IGNORE INTO staff (name, is_driver, is_del_man, is_puller, is_crew) VALUES (?, 1, 1, 1, 1)', [name]);
+    n += r.affectedRows;
+  }
+  await run('INSERT INTO settings (`key`, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value)',
+    [STAFF_FLAG, JSON.stringify({ at: new Date().toISOString(), moved: n })]);
+  console.log(`[db] Moved ${n} name(s) from the old staff list into Staff (one-time)`);
+}
+
+// One-time: when action permissions are introduced, people who could already use the
+// Builder keep being able to prepare their runsheets and add remarks -- the same things
+// they could do before actions existed. Everything else is left for the super user to
+// grant. Runs once, recorded by a settings flag, so later changes are never overridden.
+const PERMS_FLAG = 'migration_perms_v1';
+async function defaultActionPermissions() {
+  const done = await one('SELECT value FROM settings WHERE `key` = ?', [PERMS_FLAG]);
+  if (done) return;
+  const r = await run('UPDATE users SET act_prepare = 1, act_remarks = 1 WHERE module_builder = 1');
+  await run('INSERT INTO settings (`key`, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value)',
+    [PERMS_FLAG, JSON.stringify({ at: new Date().toISOString(), users: r.affectedRows })]);
+  console.log(`[db] Gave Prepare + Remarks to ${r.affectedRows} existing Builder user(s) (one-time)`);
+}
+
+// One-time backfill when the status column is first introduced: runsheets that already
+// have a sheet number become 'prepared', those without become 'draft' (the draft rule),
+// and the invoice index is built from each runsheet's data JSON.
+//
+// Runs exactly ONCE, recorded by a flag in the settings table. An earlier version decided
+// what still needed backfilling by looking for runsheets missing from the invoice index --
+// so a runsheet created later with a sheet number but no invoice numbers yet was quietly
+// promoted to Prepared on the next server restart, skipping the promotion checks. After
+// this has run once, statuses change only through the status endpoint and the index only
+// through saves.
+const BACKFILL_FLAG = 'migration_status_v1';
+async function backfillStatusAndInvoices() {
+  const done = await one('SELECT value FROM settings WHERE `key` = ?', [BACKFILL_FLAG]);
+  if (done) return;
+  const rows = await q('SELECT id, sheet_no, data FROM runsheets');
+  for (const r of rows) {
+    let stops = [];
+    try { stops = (JSON.parse(r.data || '{}').stops) || []; } catch { stops = []; }
+    const invoices = [...new Set(stops.map(s => String(s.invoice_no || '').trim()).filter(Boolean))];
+    for (const inv of invoices) await run('INSERT IGNORE INTO runsheet_invoices (runsheet_id, invoice_no) VALUES (?, ?)', [r.id, inv]);
+    if (String(r.sheet_no || '').trim()) await run("UPDATE runsheets SET status = 'prepared' WHERE id = ? AND status = 'draft'", [r.id]);
+  }
+  await run('INSERT INTO settings (`key`, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value)',
+    [BACKFILL_FLAG, JSON.stringify({ at: new Date().toISOString(), runsheets: rows.length })]);
+  console.log(`[db] Backfilled status/invoice index for ${rows.length} runsheet(s) (one-time)`);
 }
 
 // ---- settings helpers ----
@@ -107,6 +171,15 @@ async function init() {
 // The five sidebar pages that can be individually granted — kept in one place so the
 // server's user-permission validation and the bootstrap logic can't drift from what the
 // frontend actually gates.
-const MODULES = ['builder', 'history', 'products', 'customers', 'settings'];
+const MODULES = ['builder', 'history', 'status', 'products', 'customers', 'settings'];
 
-module.exports = { pool, q, one, run, isDuplicate, getSetting, setSetting, init, MODULES };
+// Actions a person can be allowed to take, each its own column act_<name> on users:
+//   prepare    Draft -> Prepared -> Pending Delivery
+//   handover   record handover details (time in/out, puller, crew, driver...) and mark Out
+//   deliver    record the delivery outcome: Out -> Partial / Full Delivery
+//   move_back  move a runsheet back to an earlier status, or cancel it (reason required)
+//   remarks    add remarks to a runsheet
+//   view_log   read a runsheet's activity log
+const ACTIONS = ['prepare', 'handover', 'deliver', 'move_back', 'remarks', 'view_log'];
+
+module.exports = { pool, q, one, run, isDuplicate, getSetting, setSetting, init, MODULES, ACTIONS };

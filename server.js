@@ -6,7 +6,7 @@ const express = require('express');
 const multer = require('multer');
 const { q, one, run, isDuplicate, getSetting, setSetting, init: initDb } = require('./db');
 const { EXTRACTION_SYSTEM_PROMPT } = require('./extraction-prompt');
-const { requireAuth, requireModule, requireAnyModule, requireAdmin, getUser, userPermissions, MODULES } = require('./auth');
+const { requireAuth, requireModule, requireAnyModule, requireAdmin, requireSuper, requireAction, getUser, userPermissions, MODULES, ACTIONS } = require('./auth');
 
 const app = express();
 const PORT = process.env.PORT || 4500;
@@ -48,11 +48,14 @@ app.get('/api/me', (req, res) => {
   res.json({ uid: req.user.uid, email: req.user.email, displayName: req.user.display_name, ...req.permissions });
 });
 
-app.get('/api/users', requireAdmin, async (req, res) => {
+// Users & Permissions is managed by super users only. `modules` are the pages a person can
+// open, `actions` what they can do; both are the raw ticks (an Admin tick implies all).
+app.get('/api/users', requireSuper, async (req, res) => {
   const rows = await q('SELECT * FROM users ORDER BY email');
   res.json(rows.map(r => ({
-    uid: r.uid, email: r.email, displayName: r.display_name, isAdmin: !!r.is_admin,
+    uid: r.uid, email: r.email, displayName: r.display_name, isAdmin: !!r.is_admin, isSuper: !!r.is_super,
     modules: Object.fromEntries(MODULES.map(m => [m, !!r[`module_${m}`]])),
+    actions: Object.fromEntries(ACTIONS.map(a => [a, !!r[`act_${a}`]])),
     lastLoginAt: r.last_login_at,
   })));
 });
@@ -95,7 +98,7 @@ app.get('/api/diag', requireAdmin, async (req, res) => {
   });
 });
 
-app.put('/api/users/:uid', requireAdmin, async (req, res) => {
+app.put('/api/users/:uid', requireSuper, async (req, res) => {
   const { uid } = req.params;
   const target = await getUser(uid);
   if (!target) return res.status(404).json({ error: 'No such user.' });
@@ -106,8 +109,21 @@ app.put('/api/users/:uid', requireAdmin, async (req, res) => {
     if (Number(otherAdmins) === 0) return res.status(400).json({ error: "Can't remove the last admin." });
   }
   const modules = req.body.modules || {};
-  const setCols = ['is_admin=?', ...MODULES.map(m => `module_${m}=?`)];
-  const vals = [isAdmin ? 1 : 0, ...MODULES.map(m => (modules[m] ? 1 : 0))];
+  const actions = req.body.actions || {};
+  // Super user: grantable or revocable only by another super user; never remove the last
+  // one; a super user is always also an admin. Left untouched unless the request sets it.
+  let isSuper = !!target.is_super;
+  if (req.body.isSuper !== undefined && !!req.body.isSuper !== !!target.is_super) {
+    if (!req.permissions.isSuper) return res.status(403).json({ error: 'Only a super user can change super-user access.' });
+    if (target.is_super && !req.body.isSuper) {
+      const { n } = await one('SELECT COUNT(*) AS n FROM users WHERE is_super = 1 AND uid != ?', [uid]);
+      if (Number(n) === 0) return res.status(400).json({ error: "Can't remove the last super user." });
+    }
+    isSuper = !!req.body.isSuper;
+  }
+  const finalAdmin = isSuper ? 1 : (isAdmin ? 1 : 0);
+  const setCols = ['is_admin=?', 'is_super=?', ...MODULES.map(m => `module_${m}=?`), ...ACTIONS.map(a => `act_${a}=?`)];
+  const vals = [finalAdmin, isSuper ? 1 : 0, ...MODULES.map(m => (modules[m] ? 1 : 0)), ...ACTIONS.map(a => (actions[a] ? 1 : 0))];
   await run(`UPDATE users SET ${setCols.join(',')} WHERE uid=?`, [...vals, uid]);
   res.json({ ok: true });
 });
@@ -227,7 +243,7 @@ function normEntryUnit(v) { return /^p/i.test(String(v ?? '').trim()) ? 'PCS' : 
 // Category, Sub-category, Sub-category 2, Base unit, Group, Item type,
 // Qty/Ctn, Selling rate), plus the app's own is_round_item flag.
 // =====================================================================
-app.get('/api/products', requireAnyModule('builder', 'products'), async (req, res) => {
+app.get('/api/products', requireAnyModule('builder', 'products', 'status'), async (req, res) => {
   const rows = await q('SELECT * FROM products ORDER BY name');
   res.json(rows.map(r => ({ ...r, is_round_item: !!r.is_round_item })));
 });
@@ -397,7 +413,64 @@ app.put('/api/settings/frequent-columns', requireModule('settings'), async (req,
   res.json({ ok: true });
 });
 
-app.get('/api/settings/clerks', requireAnyModule('builder', 'settings'), async (req, res) => {
+// ---- delivery companies and staff (managed in Settings, used on the Status board) ----
+const COMPANY_KINDS = new Set(['inhouse', 'thirdparty']);
+const STAFF_ROLES = ['driver', 'del_man', 'puller', 'crew'];
+const companyRow = (r) => ({ id: r.id, name: r.name, kind: r.kind, active: !!r.active });
+const staffRow = (r) => ({ id: r.id, name: r.name, active: !!r.active, company_id: r.company_id || null,
+  company_name: r.company_name || '', company_kind: r.company_kind || '',
+  roles: Object.fromEntries(STAFF_ROLES.map(k => [k, !!r['is_' + k]])) });
+
+app.get('/api/companies', requireAnyModule('settings', 'status'), async (req, res) => {
+  res.json((await q('SELECT * FROM delivery_companies ORDER BY name')).map(companyRow));
+});
+app.post('/api/companies', requireModule('settings'), async (req, res) => {
+  const name = String(req.body.name || '').trim().slice(0, 120), kind = COMPANY_KINDS.has(req.body.kind) ? req.body.kind : 'thirdparty';
+  if (!name) return res.status(400).json({ error: 'Company name is required.' });
+  try { const r = await run('INSERT INTO delivery_companies (name, kind) VALUES (?, ?)', [name, kind]); res.json({ id: Number(r.insertId) }); }
+  catch (e) { res.status(400).json({ error: isDuplicate(e) ? `There is already a company called ${name}.` : e.message }); }
+});
+app.put('/api/companies/:id', requireModule('settings'), async (req, res) => {
+  const name = String(req.body.name || '').trim().slice(0, 120), kind = COMPANY_KINDS.has(req.body.kind) ? req.body.kind : 'thirdparty';
+  if (!name) return res.status(400).json({ error: 'Company name is required.' });
+  try { await run('UPDATE delivery_companies SET name = ?, kind = ?, active = ? WHERE id = ?', [name, kind, req.body.active === false ? 0 : 1, req.params.id]); res.json({ ok: true }); }
+  catch (e) { res.status(400).json({ error: isDuplicate(e) ? `There is already a company called ${name}.` : e.message }); }
+});
+// Deleting only unlinks staff from it; runsheets keep the company name they were handed over with.
+app.delete('/api/companies/:id', requireModule('settings'), async (req, res) => {
+  await run('DELETE FROM delivery_companies WHERE id = ?', [req.params.id]);
+  res.json({ ok: true });
+});
+
+app.get('/api/staff', requireAnyModule('settings', 'status'), async (req, res) => {
+  const rows = await q(`SELECT s.*, c.name AS company_name, c.kind AS company_kind
+                        FROM staff s LEFT JOIN delivery_companies c ON c.id = s.company_id ORDER BY s.name`);
+  res.json(rows.map(staffRow));
+});
+function staffParams(body) {
+  const name = String(body.name || '').trim().slice(0, 120);
+  const companyId = Number(body.company_id) || null;
+  const roles = body.roles || {};
+  return { name, vals: [name, companyId, ...STAFF_ROLES.map(k => (roles[k] ? 1 : 0)), body.active === false ? 0 : 1] };
+}
+app.post('/api/staff', requireModule('settings'), async (req, res) => {
+  const { name, vals } = staffParams(req.body || {});
+  if (!name) return res.status(400).json({ error: 'Name is required.' });
+  try { const r = await run(`INSERT INTO staff (name, company_id, ${STAFF_ROLES.map(k => 'is_' + k).join(', ')}, active) VALUES (?, ?, ?, ?, ?, ?, ?)`, vals); res.json({ id: Number(r.insertId) }); }
+  catch (e) { res.status(400).json({ error: isDuplicate(e) ? `${name} is already in the staff list.` : e.message }); }
+});
+app.put('/api/staff/:id', requireModule('settings'), async (req, res) => {
+  const { name, vals } = staffParams(req.body || {});
+  if (!name) return res.status(400).json({ error: 'Name is required.' });
+  try { await run(`UPDATE staff SET name = ?, company_id = ?, ${STAFF_ROLES.map(k => 'is_' + k + ' = ?').join(', ')}, active = ? WHERE id = ?`, [...vals, req.params.id]); res.json({ ok: true }); }
+  catch (e) { res.status(400).json({ error: isDuplicate(e) ? `${name} is already in the staff list.` : e.message }); }
+});
+app.delete('/api/staff/:id', requireModule('settings'), async (req, res) => {
+  await run('DELETE FROM staff WHERE id = ?', [req.params.id]);
+  res.json({ ok: true });
+});
+
+app.get('/api/settings/clerks', requireAnyModule('builder', 'settings', 'status'), async (req, res) => {
   res.json(await getSetting('clerks', []));
 });
 
@@ -410,17 +483,324 @@ app.put('/api/settings/clerks', requireModule('settings'), async (req, res) => {
 // =====================================================================
 // RUNSHEETS (history + save/reopen)
 // =====================================================================
-app.get('/api/runsheets', requireAnyModule('builder', 'history'), async (req, res) => {
+// ---------------------------------------------------------------------------
+// Runsheet lifecycle
+// ---------------------------------------------------------------------------
+// draft -> prepared -> pending -> out -> partial | delivered, plus cancelled from anywhere.
+//   draft      no sheet number yet -- can't advance until one is entered
+//   prepared   built, numbered, uniqueness checks passed
+//   pending    admin has marked it ready to pick and hand over
+//   out        handed over to the driver -- CONTENTS LOCK from here on
+//   partial / delivered   the delivery outcome has been recorded (alternatives)
+//   cancelled  abandoned, with a reason
+// Forward moves go one step at a time. Backward moves (admin) can go to any earlier
+// status and require a reason. Cancelling requires a reason. Every move is logged.
+const STATUS = {
+  order: ['draft', 'prepared', 'pending', 'out', 'partial', 'delivered', 'cancelled'],
+  rank: { draft: 0, prepared: 1, pending: 2, out: 3, partial: 4, delivered: 4, cancelled: 99 },
+  label: { draft: 'Draft', prepared: 'Prepared', pending: 'Pending Delivery', out: 'Out for Delivery', partial: 'Partial Delivery', delivered: 'Full Delivery', cancelled: 'Cancelled' },
+  next: { draft: ['prepared'], prepared: ['pending'], pending: ['out'], out: ['partial', 'delivered'], partial: [], delivered: [], cancelled: [] },
+  // contents are read-only at these statuses (super user excepted)
+  locked: new Set(['out', 'partial', 'delivered', 'cancelled']),
+  // an invoice on a runsheet at one of these is "in progress elsewhere"
+  active: new Set(['draft', 'prepared', 'pending', 'out']),
+};
+const isLocked = (status) => STATUS.locked.has(status);
+
+async function logEvent(runsheetId, req, type, extra = {}) {
+  await run(`INSERT INTO runsheet_events (runsheet_id, at, actor_uid, actor_name, type, from_status, to_status, reason, note)
+             VALUES (?, UTC_TIMESTAMP(), ?, ?, ?, ?, ?, ?, ?)`,
+    [runsheetId, req.user.uid, req.user.display_name || req.user.email || '', type,
+     extra.from || '', extra.to || '', extra.reason || '', extra.note || null]);
+}
+
+// Keep the invoice index in step with a runsheet's stops. Called after every save.
+async function syncInvoiceIndex(runsheetId, data) {
+  const invoices = [...new Set(((data && data.stops) || []).map(s => String(s.invoice_no || '').trim()).filter(Boolean))];
+  await run('DELETE FROM runsheet_invoices WHERE runsheet_id = ?', [runsheetId]);
+  for (const inv of invoices) await run('INSERT IGNORE INTO runsheet_invoices (runsheet_id, invoice_no) VALUES (?, ?)', [runsheetId, inv]);
+}
+
+// The two uniqueness rules, checked on explicit saves and when a draft is promoted.
+// Auto-save deliberately skips them so draft protection keeps working while someone
+// is mid-way through typing a number that will clash until they finish it.
+//   Sheet number: unique across all runsheets.
+//   Invoice number: blocked if it is on any other ACTIVE runsheet (draft..out) or one
+//   that was DELIVERED. Allowed if every earlier holder is cancelled. (A partially
+//   delivered runsheet counts as delivered until per-invoice outcomes exist -- Step 5
+//   refines this to "allowed if that invoice was ticked not-delivered".)
+async function uniquenessProblems(payload, excludeId) {
+  const problems = [];
+  const sheetNo = String(payload.sheet_no || '').trim();
+  if (sheetNo) {
+    const clash = await one('SELECT id FROM runsheets WHERE sheet_no = ? AND id <> ?', [sheetNo, excludeId || 0]);
+    if (clash) problems.push(`Sheet number ${sheetNo} is already used by runsheet #${clash.id}.`);
+  }
+  const stops = (payload.data && payload.data.stops) || [];
+  const seen = new Map();
+  for (const s of stops) {
+    const inv = String(s.invoice_no || '').trim();
+    if (!inv) continue;
+    if (seen.has(inv)) { if (!seen.get(inv)) { problems.push(`Invoice ${inv} appears more than once on this runsheet.`); seen.set(inv, true); } continue; }
+    seen.set(inv, false);
+    const holders = await q(`SELECT r.id, r.sheet_no, r.status FROM runsheet_invoices i JOIN runsheets r ON r.id = i.runsheet_id
+                             WHERE i.invoice_no = ? AND r.id <> ?`, [inv, excludeId || 0]);
+    for (const h of holders) {
+      if (STATUS.active.has(h.status)) problems.push(`Invoice ${inv} is already on runsheet ${h.sheet_no || '#' + h.id} (${STATUS.label[h.status]}).`);
+      else if (h.status === 'delivered' || h.status === 'partial') problems.push(`Invoice ${inv} was already delivered on runsheet ${h.sheet_no || '#' + h.id}.`);
+    }
+  }
+  return problems;
+}
+
+app.get('/api/runsheets', requireAnyModule('builder', 'history', 'status'), async (req, res) => {
   const rows = await q(
-    'SELECT id, sheet_no, area, delivery_man, vehicle_no, run_date, delivery_date, created_by, created_at, updated_at FROM runsheets ORDER BY id DESC'
+    `SELECT id, sheet_no, area, delivery_man, vehicle_no, run_date, delivery_date, created_by, created_at, updated_at, status,
+            dispatch, data FROM runsheets ORDER BY id DESC`
   );
+  // per-runsheet totals for the Status board: manual CTNS, round items (cartons) and loose
+  // pieces, counted the same way as the printout -- pieces never become cartons
+  const perCtn = new Map((await q('SELECT id, qty_per_ctn FROM products')).map(p => [p.id, Number(p.qty_per_ctn) || 1]));
+  res.json(rows.map(({ data, ...r }) => {
+    let stops = [];
+    try { stops = (JSON.parse(data || '{}').stops) || []; } catch { stops = []; }
+    let ctns = 0, ri = 0, pcs = 0;
+    for (const s of stops) {
+      ctns += (Number(s.ctns_carton) || 0) + (Number(s.ctns_bag) || 0);
+      for (const it of s.round_items || []) {
+        const qn = Number(it.qty_ctn) || 0;
+        if (it.packing_type === 'pcs') pcs += qn * (perCtn.get(it.product_id) || 1); else ri += qn;
+      }
+    }
+    const r2 = (x) => Math.round(x * 100) / 100;
+    return { ...r, stop_count: stops.length, totals: { ctns: r2(ctns), ri: r2(ri), pcs: r2(pcs) }, dispatch: parseDispatch(r.dispatch) };
+  }));
+});
+
+// Change a runsheet's status. Each move needs its own action permission:
+//   Draft -> Prepared -> Pending            prepare
+//   Pending -> Out for Delivery              handover -- only through /handover, which
+//                                            records the handover details at the same time
+//   Out -> Partial / Full Delivery           deliver
+//   back to any earlier status, or cancel    move_back, with a reason
+app.post('/api/runsheets/:id/status', async (req, res) => {
+  const to = String(req.body.to || '');
+  const reason = String(req.body.reason || '').trim();
+  if (!STATUS.order.includes(to)) return res.status(400).json({ error: 'Unknown status.' });
+  const rs = await one('SELECT * FROM runsheets WHERE id = ?', [req.params.id]);
+  if (!rs) return res.status(404).json({ error: 'not found' });
+  const from = rs.status || 'draft';
+  if (to === from) return res.json({ ok: true, status: from });
+  const forward = STATUS.next[from].includes(to);
+  const backward = !forward && to !== 'cancelled' && STATUS.rank[to] < STATUS.rank[from];
+  const can = req.permissions.actions;
+  if (to === 'cancelled') {
+    if (!can.move_back) return res.status(403).json({ error: "You don't have permission to cancel a runsheet." });
+    if (!reason) return res.status(400).json({ error: 'A reason is required to cancel.' });
+  } else if (backward) {
+    if (!can.move_back) return res.status(403).json({ error: "You don't have permission to move a runsheet back." });
+    if (!reason) return res.status(400).json({ error: 'A reason is required to move a runsheet back.' });
+  } else if (!forward) {
+    return res.status(400).json({ error: `Can't go from ${STATUS.label[from]} to ${STATUS.label[to]}.` });
+  } else if (to === 'prepared' || to === 'pending') {
+    if (!can.prepare) return res.status(403).json({ error: "You don't have permission to prepare runsheets." });
+  } else if (to === 'out') {
+    return res.status(400).json({ error: 'Hand a runsheet over from the Status board, so the handover details are recorded.' });
+  } else if (to === 'partial' || to === 'delivered') {
+    if (!can.deliver) return res.status(403).json({ error: "You don't have permission to record deliveries." });
+  }
+  if (forward && from === 'draft') {
+    // the draft rule + the uniqueness rules gate the very first promotion
+    if (!String(rs.sheet_no || '').trim()) return res.status(400).json({ error: 'Enter a sheet number first -- a runsheet without one is only a draft.' });
+    const payload = { sheet_no: rs.sheet_no, data: JSON.parse(rs.data || '{}') };
+    const problems = await uniquenessProblems(payload, rs.id);
+    if (problems.length) return res.status(409).json({ error: problems.join(' '), problems });
+  }
+  await run('UPDATE runsheets SET status = ?, updated_at = UTC_TIMESTAMP() WHERE id = ?', [to, rs.id]);
+  await logEvent(rs.id, req, to === 'cancelled' ? 'cancel' : (backward ? 'status_back' : 'status'), { from, to, reason });
+  res.json({ ok: true, status: to });
+});
+
+// Remarks: allowed at any status, including after the contents lock.
+app.get('/api/runsheets/:id/remarks', requireAction('remarks', 'view_log'), async (req, res) => {
+  res.json(await q("SELECT id, at, actor_name, note FROM runsheet_events WHERE runsheet_id = ? AND type = 'remark' ORDER BY id", [req.params.id]));
+});
+
+app.post('/api/runsheets/:id/remarks', requireAction('remarks'), async (req, res) => {
+  const note = String(req.body.note || '').trim();
+  if (!note) return res.status(400).json({ error: 'Remark is empty.' });
+  const rs = await one('SELECT id, status FROM runsheets WHERE id = ?', [req.params.id]);
+  if (!rs) return res.status(404).json({ error: 'not found' });
+  await logEvent(rs.id, req, 'remark', { note });
+  res.json({ ok: true });
+});
+
+// The activity log for a runsheet, oldest first.
+app.get('/api/runsheets/:id/events', requireAction('view_log'), async (req, res) => {
+  const rows = await q('SELECT id, at, actor_name, type, from_status, to_status, reason, note FROM runsheet_events WHERE runsheet_id = ? ORDER BY id', [req.params.id]);
   res.json(rows);
 });
 
-app.get('/api/runsheets/:id', requireAnyModule('builder', 'history'), async (req, res) => {
+app.get('/api/runsheets/:id', requireAnyModule('builder', 'history', 'status'), async (req, res) => {
   const row = await one('SELECT * FROM runsheets WHERE id=?', [req.params.id]);
   if (!row) return res.status(404).json({ error: 'not found' });
-  res.json({ ...row, data: JSON.parse(row.data) });
+  res.json({ ...row, data: JSON.parse(row.data), dispatch: parseDispatch(row.dispatch) });
+});
+
+// ---------------------------------------------------------------------------
+// Dispatch: the runsheet's handover details, kept apart from its contents
+// ---------------------------------------------------------------------------
+// del_man / vehicle_no here are the ACTUAL ones, confirmed or corrected at handover; the
+// planned ones stay in the runsheet's own columns, set in the Builder. `v` guards against
+// two people saving handover details over each other.
+// Two groups, in the order things happen, each edited by its own permission:
+//   OUT   (Hand over)        -- handed to reception, delivery date, delivery man, vehicle,
+//                               driver + company, time in / out, puller(s), loading crew
+//   BACK  (Record delivery)  -- received back, invoices, what wasn't delivered, returns
+// Each group has its own "entered by": pre-filled with whoever is logged in, editable because
+// several people at reception can share one login. del_man / vehicle_no / delivery_date are
+// the ACTUAL ones; the planned ones stay in the runsheet's own columns, set in the Builder.
+const DISPATCH_TEXT = {
+  del_man: 120, vehicle_no: 40, driver: 120, time_in: 5, time_out: 5,
+  reception_date: 10, delivery_date: 10, entered_by_out: 120,
+  received_date: 10, invoices_all: 3, has_returns: 3, entered_by_back: 120,
+};
+const DISPATCH_LISTS = { pullers: 10, crew: 15, missing_invoices: 25 };
+const DISPATCH_NUMS = ['ri_not_delivered', 'ctn_not_delivered', 'pcs_not_delivered'];
+const OUT_FIELDS = ['del_man', 'vehicle_no', 'driver', 'company_id', 'time_in', 'time_out', 'pullers', 'crew', 'reception_date', 'delivery_date', 'entered_by_out'];
+const BACK_FIELDS = ['received_date', 'invoices_all', 'missing_invoices', 'ri_not_delivered', 'ctn_not_delivered', 'pcs_not_delivered', 'has_returns', 'entered_by_back'];
+const BACK_EDITABLE = new Set(['out', 'partial', 'delivered']);
+
+function parseDispatch(raw) {
+  let d = {};
+  try { d = raw ? JSON.parse(raw) : {}; } catch { d = {}; }
+  const out = { v: Number(d.v) || 0 };
+  for (const k of Object.keys(DISPATCH_TEXT)) out[k] = String(d[k] || '');
+  for (const k of Object.keys(DISPATCH_LISTS)) out[k] = Array.isArray(d[k]) ? d[k].map(String) : [];
+  for (const k of DISPATCH_NUMS) out[k] = d[k] === '' || d[k] == null ? '' : Number(d[k]);
+  // the delivery company: its id, plus the name and kind as they were when recorded, so a
+  // later rename or archive in Settings never rewrites who took an old runsheet out
+  out.company_id = Number(d.company_id) || null;
+  out.company_name = String(d.company_name || '');
+  out.company_kind = String(d.company_kind || '');
+  return out;
+}
+function cleanDispatch(body) {
+  const out = {};
+  for (const [k, max] of Object.entries(DISPATCH_TEXT)) out[k] = String((body && body[k]) || '').trim().slice(0, max);
+  for (const [k, max] of Object.entries(DISPATCH_LISTS)) {
+    const list = Array.isArray(body && body[k]) ? body[k] : [];
+    out[k] = [...new Set(list.map(x => String(x || '').trim().slice(0, 60)).filter(Boolean))].slice(0, max);
+  }
+  for (const k of DISPATCH_NUMS) {
+    const v = body && body[k];
+    out[k] = (v === '' || v == null || !Number.isFinite(Number(v)) || Number(v) < 0) ? '' : Math.round(Number(v) * 100) / 100;
+  }
+  for (const k of ['time_in', 'time_out']) if (out[k] && !/^([01]\d|2[0-3]):[0-5]\d$/.test(out[k])) out[k] = '';
+  for (const k of ['reception_date', 'delivery_date', 'received_date']) if (out[k] && !/^\d{4}-\d{2}-\d{2}$/.test(out[k])) out[k] = '';
+  for (const k of ['invoices_all', 'has_returns']) if (out[k] !== 'yes' && out[k] !== 'no') out[k] = '';
+  if (out.invoices_all === 'yes') out.missing_invoices = [];
+  out.company_id = Number(body && body.company_id) || null;
+  return out;
+}
+// "Time in 09:15 · Puller: Raju, Kumar" -- what changed, for the activity log.
+const DISPATCH_LABEL = {
+  reception_date: 'Handed to reception', delivery_date: 'Delivery date', del_man: 'Delivery man', vehicle_no: 'Vehicle',
+  driver: 'Driver', company_name: 'Company', time_in: 'Time in', time_out: 'Time out', pullers: 'Puller', crew: 'Loading crew',
+  entered_by_out: 'Entered by (going out)', received_date: 'Received back', invoices_all: 'All invoices received',
+  missing_invoices: 'Missing invoices', ri_not_delivered: 'Round items not delivered', ctn_not_delivered: 'Cartons not delivered',
+  pcs_not_delivered: 'Pieces not delivered', has_returns: 'Return goods', entered_by_back: 'Entered by (coming back)',
+};
+function dispatchChanges(before, after) {
+  const parts = [];
+  for (const k of Object.keys(DISPATCH_LABEL)) {
+    const a = Array.isArray(before[k]) ? before[k].join(', ') : before[k];
+    const b = Array.isArray(after[k]) ? after[k].join(', ') : after[k];
+    if (String(a ?? '') !== String(b ?? '')) parts.push(`${DISPATCH_LABEL[k]}: ${b === '' || b == null ? '(cleared)' : b}`);
+  }
+  return parts.join(' · ');
+}
+// "Srini" from the login, used when an "entered by" is left empty
+const loginName = (req) => {
+  const s = String(req.user.display_name || req.user.email || '').trim();
+  const n = s.includes('@') ? s.slice(0, s.indexOf('@')) : s;
+  return n.charAt(0).toUpperCase() + n.slice(1);
+};
+const nowSingapore = () => new Date().toLocaleTimeString('en-GB', { timeZone: 'Asia/Singapore', hour: '2-digit', minute: '2-digit', hour12: false });
+const DISPATCH_EDITABLE = new Set(['prepared', 'pending', 'out', 'partial', 'delivered']);
+
+async function saveDispatch(rs, req, body) {
+  const before = parseDispatch(rs.dispatch);
+  if (Number(body.v || 0) !== before.v) return { conflict: true };
+  const after = { ...cleanDispatch(body), v: before.v + 1 };
+  // Each group only changes for someone allowed to edit it, and the coming-back group only
+  // once the runsheet is out -- otherwise it's kept exactly as it was.
+  const can = req.permissions.actions;
+  const canOut = can.handover && DISPATCH_EDITABLE.has(rs.status);
+  const canBack = can.deliver && BACK_EDITABLE.has(rs.status);
+  for (const k of OUT_FIELDS) if (!canOut) after[k] = before[k];
+  for (const k of BACK_FIELDS) if (!canBack) after[k] = before[k];
+  if (!canOut) { after.company_name = before.company_name; after.company_kind = before.company_kind; }
+  const changed = (fields) => fields.some(k => String(Array.isArray(before[k]) ? before[k].join() : before[k] ?? '') !== String(Array.isArray(after[k]) ? after[k].join() : after[k] ?? ''));
+  if (canOut && !after.entered_by_out && changed(OUT_FIELDS)) after.entered_by_out = loginName(req);
+  if (canBack && !after.entered_by_back && changed(BACK_FIELDS)) after.entered_by_back = loginName(req);
+  // name and kind come from the companies table, never from what the browser sent
+  if (canOut) {
+    const co = after.company_id ? await one('SELECT id, name, kind FROM delivery_companies WHERE id = ?', [after.company_id]) : null;
+    after.company_id = co ? co.id : null;
+    after.company_name = co ? co.name : '';
+    after.company_kind = co ? co.kind : '';
+  }
+  await run('UPDATE runsheets SET dispatch = ?, updated_at = UTC_TIMESTAMP() WHERE id = ?', [JSON.stringify(after), rs.id]);
+  return { before, after };
+}
+
+// Save handover details without changing status (e.g. time in when the vehicle arrives).
+app.put('/api/runsheets/:id/dispatch', requireAction('handover', 'deliver'), async (req, res) => {
+  const rs = await one('SELECT id, status, dispatch FROM runsheets WHERE id = ?', [req.params.id]);
+  if (!rs) return res.status(404).json({ error: 'not found' });
+  if (!DISPATCH_EDITABLE.has(rs.status)) return res.status(400).json({ error: `Tracking details can't be changed while the runsheet is ${STATUS.label[rs.status]}.` });
+  const r = await saveDispatch(rs, req, req.body || {});
+  if (r.conflict) return res.status(409).json({ error: 'Someone else updated these handover details just now. Reload to see them before saving again.' });
+  const note = dispatchChanges(r.before, r.after);
+  if (note) await logEvent(rs.id, req, 'dispatch', { note });
+  res.json({ ok: true, dispatch: r.after });
+});
+
+// Hand over: record the handover details and move Pending -> Out for Delivery in one step.
+// The actual delivery man and vehicle are required; time out is stamped now if left empty.
+app.post('/api/runsheets/:id/handover', requireAction('handover'), async (req, res) => {
+  const rs = await one('SELECT id, status, dispatch FROM runsheets WHERE id = ?', [req.params.id]);
+  if (!rs) return res.status(404).json({ error: 'not found' });
+  if (rs.status !== 'pending') return res.status(400).json({ error: `Only a Pending Delivery runsheet can be handed over (this one is ${STATUS.label[rs.status]}).` });
+  const body = { ...(req.body || {}) };
+  const probe = cleanDispatch(body);
+  const missing = [!probe.del_man && 'delivery man', !probe.vehicle_no && 'vehicle no'].filter(Boolean);
+  if (missing.length) return res.status(400).json({ error: `Enter the ${missing.join(' and ')} before handing over.` });
+  if (!probe.time_out) body.time_out = nowSingapore();
+  const r = await saveDispatch(rs, req, body);
+  if (r.conflict) return res.status(409).json({ error: 'Someone else updated these handover details just now. Reload to see them before handing over.' });
+  await run("UPDATE runsheets SET status = 'out', updated_at = UTC_TIMESTAMP() WHERE id = ?", [rs.id]);
+  await logEvent(rs.id, req, 'handover', { from: 'pending', to: 'out', note: dispatchChanges(r.before, r.after) });
+  res.json({ ok: true, status: 'out', dispatch: r.after });
+});
+
+// Record the outcome: save the coming-back details and set Full or Partial Delivery in one
+// step. Also used to correct an outcome already recorded (Partial <-> Full).
+app.post('/api/runsheets/:id/outcome', requireAction('deliver'), async (req, res) => {
+  const to = req.body && req.body.outcome;
+  if (to !== 'delivered' && to !== 'partial') return res.status(400).json({ error: 'Choose Full or Partial Delivery.' });
+  const rs = await one('SELECT id, status, dispatch FROM runsheets WHERE id = ?', [req.params.id]);
+  if (!rs) return res.status(404).json({ error: 'not found' });
+  if (!BACK_EDITABLE.has(rs.status)) return res.status(400).json({ error: `The outcome can only be recorded once the runsheet is Out for Delivery (this one is ${STATUS.label[rs.status]}).` });
+  const r = await saveDispatch(rs, req, req.body || {});
+  if (r.conflict) return res.status(409).json({ error: 'Someone else updated these details just now. Reload to see them before saving again.' });
+  const note = dispatchChanges(r.before, r.after);
+  if (rs.status !== to) {
+    await run('UPDATE runsheets SET status = ?, updated_at = UTC_TIMESTAMP() WHERE id = ?', [to, rs.id]);
+    await logEvent(rs.id, req, 'outcome', { from: rs.status, to, note });
+  } else if (note) await logEvent(rs.id, req, 'dispatch', { note });
+  res.json({ ok: true, status: to, dispatch: r.after });
 });
 
 function validateRunsheetPayload(body) {
@@ -436,11 +816,18 @@ app.post('/api/runsheets', requireModule('builder'), async (req, res) => {
   // created_by comes from the verified token, not whatever the client sends — a person
   // can't misattribute a sheet to someone else this way.
   const createdBy = req.user.display_name || req.user.email || '';
+  if (b.explicit) {
+    const problems = await uniquenessProblems(b, 0);
+    if (problems.length) return res.status(409).json({ error: problems.join(' '), problems, code: 'DUPLICATE' });
+  }
   const info = await run(`
-    INSERT INTO runsheets (sheet_no, area, delivery_man, vehicle_no, run_date, delivery_date, created_by, data, version, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, UTC_TIMESTAMP(), UTC_TIMESTAMP())
+    INSERT INTO runsheets (sheet_no, area, delivery_man, vehicle_no, run_date, delivery_date, created_by, data, version, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'draft', UTC_TIMESTAMP(), UTC_TIMESTAMP())
   `, [txt(b.sheet_no), txt(b.area), txt(b.delivery_man), txt(b.vehicle_no), txt(b.run_date), txt(b.delivery_date), createdBy, JSON.stringify(b.data || {})]);
-  res.json({ id: Number(info.insertId), version: 1 });
+  const id = Number(info.insertId);
+  await syncInvoiceIndex(id, b.data);
+  await logEvent(id, req, 'create');
+  res.json({ id, version: 1, status: 'draft' });
 });
 
 // Optimistic concurrency: the client sends the version it loaded. If the row's current
@@ -466,6 +853,14 @@ app.put('/api/runsheets/:id', requireModule('builder'), async (req, res) => {
   if (err) return res.status(400).json({ error: err });
   const current = await one('SELECT * FROM runsheets WHERE id=?', [req.params.id]);
   if (!current) return res.status(404).json({ error: 'not found' });
+  // Contents are locked from Out for Delivery onwards; only a super user may edit them.
+  if (isLocked(current.status) && !req.permissions.isSuper) {
+    return res.status(423).json({ error: `This runsheet is ${STATUS.label[current.status]} and its contents are locked. Only a super user can edit it now.`, code: 'LOCKED', status: current.status });
+  }
+  if (b.explicit) {
+    const problems = await uniquenessProblems(b, current.id);
+    if (problems.length) return res.status(409).json({ error: problems.join(' '), problems, code: 'DUPLICATE' });
+  }
   const expected = Number(b.version);
   if (!Number.isFinite(expected) || expected !== current.version) {
     return res.status(409).json({
@@ -478,6 +873,8 @@ app.put('/api/runsheets/:id', requireModule('builder'), async (req, res) => {
     UPDATE runsheets SET sheet_no=?, area=?, delivery_man=?, vehicle_no=?, run_date=?, delivery_date=?, data=?, version=?, updated_at=UTC_TIMESTAMP()
     WHERE id=?
   `, [txt(b.sheet_no), txt(b.area), txt(b.delivery_man), txt(b.vehicle_no), txt(b.run_date), txt(b.delivery_date), JSON.stringify(b.data || {}), nextVersion, req.params.id]);
+  await syncInvoiceIndex(current.id, b.data);
+  if (isLocked(current.status)) await logEvent(current.id, req, 'super_edit', { note: 'Contents edited after lock' });
   if (b.explicit) {
     const savedBy = req.user.display_name || req.user.email || '';
     await run(`
@@ -492,7 +889,7 @@ app.put('/api/runsheets/:id', requireModule('builder'), async (req, res) => {
       )
     `, [req.params.id, req.params.id, VERSIONS_TO_KEEP]);
   }
-  res.json({ ok: true, version: nextVersion });
+  res.json({ ok: true, version: nextVersion, status: current.status });
 });
 
 // Lightweight list — no `data` (could be large) — newest first. displayNumber is a clean

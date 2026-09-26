@@ -36,7 +36,7 @@ body{background:var(--chrome-bg);font-family:var(--sans);color:var(--chrome-text
   display:flex;flex-direction:column;gap:6px}
 
 /* header band */
-.head{display:grid;grid-template-columns:300px 1fr 210px;gap:10px;align-items:stretch;
+.head{display:grid;grid-template-columns:300px 1fr 250px;gap:10px;align-items:stretch;
   border:1.5px solid var(--rule-strong);padding:7px 10px}
 .co .name{font:700 15px/1.1 var(--cond);letter-spacing:.02em}
 .co .addr{font:400 8.5px/1.35 var(--sans);color:var(--ink-soft);margin-top:3px}
@@ -49,7 +49,9 @@ body{background:var(--chrome-bg);font-family:var(--sans);color:var(--chrome-text
 .kv b{font:600 10.5px var(--mono);color:var(--ink)}
 .veh{display:flex;flex-direction:column;border-left:1.5px solid var(--rule-strong);padding-left:10px;justify-content:center;gap:3px}
 .veh .row{display:flex;justify-content:space-between;align-items:center;font:500 9px/1 var(--cond);letter-spacing:.06em;color:var(--ink-soft)}
-.veh .cell{width:110px;border-bottom:1px solid var(--rule);font:600 10.5px var(--mono);color:var(--ink);text-align:center;padding:2px 0}
+.veh .cell{width:150px;border-bottom:1px solid var(--rule);font:600 10.5px var(--mono);color:var(--ink);text-align:center;padding:2px 0;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.veh .cell .co{font:500 8.5px var(--cond);letter-spacing:.02em;color:var(--ink-soft)}
 
 /* notes line (only rendered when the run carries notes) */
 .notesline{border:1.5px solid var(--rule-strong);border-top:none;margin-top:-6px;

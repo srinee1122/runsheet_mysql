@@ -159,7 +159,14 @@ export function buildRunsheetData(rs, products) {
   return {
     meta: {
       sheet_no: rs.sheet_no || '', run_date: rs.run_date || '', area: rs.area || '',
-      del_date: rs.delivery_date || '', del_man: rs.delivery_man || '', veh_no: rs.vehicle_no || '',
+      // the ACTUAL delivery man / vehicle confirmed at handover win over the planned ones
+      del_date: (rs.dispatch && rs.dispatch.delivery_date) || rs.delivery_date || '',
+      del_man: (rs.dispatch && rs.dispatch.del_man) || rs.delivery_man || '',
+      veh_no: (rs.dispatch && rs.dispatch.vehicle_no) || rs.vehicle_no || '',
+      driver: (rs.dispatch && rs.dispatch.driver) || '',
+      driver_company: (rs.dispatch && rs.dispatch.company_name) || '',
+      time_in: (rs.dispatch && rs.dispatch.time_in) || '',
+      time_out: (rs.dispatch && rs.dispatch.time_out) || '',
       notes,
       // Who created the runsheet — set by the server from the verified login when the sheet
       // was first saved, never from anything the browser sends. Pre-fills the "Prepared By"

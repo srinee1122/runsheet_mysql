@@ -2,7 +2,7 @@
 // this person" (a verified uid/email from their ID token); everything about "what can
 // they do here" is decided entirely by the local `users` table in our own database.
 'use strict';
-const { one, run, MODULES } = require('./db.js');
+const { one, run, MODULES, ACTIONS } = require('./db.js');
 
 // ---- Firebase Admin initialization ----
 // The service account key is a secret and must never be committed to the repo or
@@ -74,7 +74,8 @@ try {
 }
 
 // ---- local user lookup / bootstrap ----
-const BLANK_PERMS = Object.fromEntries(MODULES.map(m => [`module_${m}`, 0]));
+const BLANK_MODULES = Object.fromEntries(MODULES.map(m => [m, false]));
+const BLANK_ACTIONS = Object.fromEntries(ACTIONS.map(a => [a, false]));
 
 async function getUser(uid) {
   return one('SELECT * FROM users WHERE uid = ?', [uid]);
@@ -97,8 +98,8 @@ async function upsertUser(uid, email, displayName) {
   const existing = await getUser(uid);
   const now = new Date().toISOString();
   if (existing) {
-    if (isBootstrapAdmin && !existing.is_admin) {
-      const cols = ['email=?', 'display_name=?', 'last_login_at=?', 'is_admin=1', ...MODULES.map(m => `module_${m}=1`)];
+    if (isBootstrapAdmin && (!existing.is_admin || !existing.is_super)) {
+      const cols = ['email=?', 'display_name=?', 'last_login_at=?', 'is_admin=1', 'is_super=1', ...MODULES.map(m => `module_${m}=1`)];
       await run(`UPDATE users SET ${cols.join(',')} WHERE uid=?`,
         [email || existing.email, displayName || existing.display_name, now, uid]);
     } else {
@@ -110,17 +111,23 @@ async function upsertUser(uid, email, displayName) {
   const { n } = await one('SELECT COUNT(*) AS n FROM users');
   const isFirstUser = Number(n) === 0;
   const makeAdmin = isFirstUser || isBootstrapAdmin;
-  const cols = ['uid', 'email', 'display_name', 'is_admin', 'last_login_at', ...MODULES.map(m => `module_${m}`)];
-  const vals = [uid, email || '', displayName || '', makeAdmin ? 1 : 0, now, ...MODULES.map(() => (makeAdmin ? 1 : 0))];
+  const cols = ['uid', 'email', 'display_name', 'is_admin', 'is_super', 'last_login_at', ...MODULES.map(m => `module_${m}`)];
+  const vals = [uid, email || '', displayName || '', makeAdmin ? 1 : 0, makeAdmin ? 1 : 0, now, ...MODULES.map(() => (makeAdmin ? 1 : 0))];
   await run(`INSERT INTO users (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`, vals);
   return getUser(uid);
 }
 
+// modules: which pages they can open. actions: what they can do. Both are returned as
+// EFFECTIVE values -- an admin or super user gets every one true -- so the frontend and
+// the route guards can check a single flag. `granted` carries the raw ticks for the
+// Users & Permissions page.
 function userPermissions(userRow) {
-  if (!userRow) return { isAdmin: false, modules: { ...BLANK_PERMS } };
-  const modules = {};
-  for (const m of MODULES) modules[m] = !!userRow[`module_${m}`];
-  return { isAdmin: !!userRow.is_admin, modules };
+  if (!userRow) return { isAdmin: false, isSuper: false, modules: { ...BLANK_MODULES }, actions: { ...BLANK_ACTIONS } };
+  const isSuper = !!userRow.is_super, isAdmin = !!userRow.is_admin || isSuper;
+  const modules = {}, actions = {};
+  for (const m of MODULES) modules[m] = isAdmin || !!userRow[`module_${m}`];
+  for (const a of ACTIONS) actions[a] = isAdmin || !!userRow[`act_${a}`];
+  return { isAdmin, isSuper, modules, actions };
 }
 
 // ---- middleware ----
@@ -172,10 +179,25 @@ function requireAnyModule(...moduleNames) {
   };
 }
 
+// Passes if the person has ANY of the listed actions (admins and super users have all).
+function requireAction(...names) {
+  return (req, res, next) => {
+    if (!req.permissions) return res.status(401).json({ error: 'Not signed in.' });
+    if (names.some(n => req.permissions.actions[n])) return next();
+    res.status(403).json({ error: "You don't have permission to do that." });
+  };
+}
+
+function requireSuper(req, res, next) {
+  if (!req.permissions) return res.status(401).json({ error: 'Not signed in.' });
+  if (req.permissions.isSuper) return next();
+  res.status(403).json({ error: 'Super user access required.' });
+}
+
 function requireAdmin(req, res, next) {
   if (!req.permissions) return res.status(401).json({ error: 'Not signed in.' });
   if (req.permissions.isAdmin) return next();
   res.status(403).json({ error: 'Admin access required.' });
 }
 
-module.exports = { requireAuth, requireModule, requireAnyModule, requireAdmin, getUser, userPermissions, MODULES };
+module.exports = { requireAuth, requireModule, requireAnyModule, requireAdmin, requireSuper, requireAction, getUser, userPermissions, MODULES, ACTIONS };

@@ -105,9 +105,15 @@ function mergePages(pages) {
   return [...map.values()];
 }
 
+// Mirrors STATUS in server.js -- the server is the authority; these only drive the UI.
+const STATUS_LABEL = { draft: 'Draft', prepared: 'Prepared', pending: 'Pending Delivery', out: 'Out for Delivery', partial: 'Partial Delivery', delivered: 'Full Delivery', cancelled: 'Cancelled' };
+const NEXT_STATUS = { draft: ['prepared'], prepared: ['pending'], pending: ['out'], out: ['partial', 'delivered'], partial: [], delivered: [], cancelled: [] };
+const LOCKED_STATUSES = new Set(['out', 'partial', 'delivered', 'cancelled']);
+
 export default {
   props: { id: { type: String, default: null } },
   components: { PhotoReviewPanel, MatrixView },
+  inject: ['auth'],
   data() {
     return {
       // Matrix view is now the only layout — this file used to also support a List view;
@@ -128,6 +134,10 @@ export default {
       saving: false,
       excelDownloading: false,
       saveMsg: '',
+      // Lifecycle status of this runsheet (see STATUS in server.js). 'draft' until it has a
+      // sheet number and is promoted. Contents lock from 'out' onwards -- see `locked`.
+      status: 'draft',
+      statusBusy: false,
       // photo flow
       photoProgress: null, // { done, total }
       reviewSalesOrders: [],
@@ -148,6 +158,20 @@ export default {
       for (const s of this.stops) { ctns += this.rowCtns(s); ri += this.rowRI(s); pcs += this.rowPieces(s); }
       return { invoices: this.stops.length, ctns, ri: round2(ri), pkgs: round2(ctns + ri), pcs: round2(pcs) };
     },
+    isAdmin() { return !!(this.auth.permissions && this.auth.permissions.isAdmin); },
+    isSuper() { return !!(this.auth.permissions && this.auth.permissions.isSuper); },
+    statusLabel() { return STATUS_LABEL[this.status] || this.status; },
+    // Contents are read-only from Out for Delivery onwards, unless you're a super user.
+    locked() { return LOCKED_STATUSES.has(this.status) && !this.isSuper; },
+    // The single next forward step, if any (out has two alternatives, handled in template).
+    // The Builder only offers the PREPARE steps (Draft -> Prepared -> Pending). Handover,
+    // delivery, moving back and cancelling happen on the Status board.
+    nextForward() {
+      const can = this.auth.permissions && this.auth.permissions.actions;
+      if (!can || !can.prepare) return [];
+      return (NEXT_STATUS[this.status] || []).filter(st => st === 'prepared' || st === 'pending');
+    },
+    canSeeStatusBoard() { return !!(this.auth.permissions && this.auth.permissions.modules.status); },
     autoSaveStatusText() {
       if (this.autoSaveConflict) return 'changed elsewhere — see notice below';
       if (this.autoSaving) return 'saving draft…';
@@ -209,16 +233,35 @@ export default {
         const rs = await Api.get(`/api/runsheets/${id}`);
         this.runsheetId = rs.id;
         this.version = rs.version;
+        this.status = rs.status || 'draft';
         this.header = { sheet_no: rs.sheet_no, area: rs.area, delivery_man: rs.delivery_man, vehicle_no: rs.vehicle_no, run_date: rs.run_date, delivery_date: rs.delivery_date };
         this.stops = (rs.data.stops || []).map(s => ({ ...migrateStopCtns(s), _uid: uid() }));
       } else {
         this.runsheetId = null;
         this.version = null;
+        this.status = 'draft';
         this.header = { sheet_no: '', area: '', delivery_man: '', vehicle_no: '', run_date: new Date().toISOString().slice(0, 10), delivery_date: '' };
         this.stops = [];
       }
       this.viewingVersion = null;
       this.autoSaveConflict = false;
+    },
+    // ---- lifecycle actions ----
+    async changeStatus(to, reason) {
+      if (!this.runsheetId) { alert('Save the runsheet first.'); return; }
+      this.statusBusy = true;
+      try {
+        // make sure what's on screen is what gets promoted (a draft's sheet number, for one)
+        if (!this.locked && this.autoSavePending) { const ok = await this.save(); if (!ok) return; }
+        const r = await Api.post(`/api/runsheets/${this.runsheetId}/status`, { to, reason });
+        this.status = r.status;
+      } catch (e) {
+        alert(e.message);
+      } finally { this.statusBusy = false; }
+    },
+    advanceTo(to) {
+      const msg = { prepared: 'Mark this runsheet as Prepared?', pending: 'Mark as Pending Delivery (ready to pick and hand over)?' }[to];
+      if (confirm(msg)) this.changeStatus(to);
     },
     round2, // exposed to template
     formatDateTime, // exposed to template
@@ -281,6 +324,11 @@ export default {
 
     async save() {
       if (this.stops.length > 25) { alert('Max 25 invoices per sheet (one-page rule).'); return false; }
+      // If an auto-save is already on its way to the server, let it land first. Otherwise
+      // this save goes out with the version number from BEFORE that auto-save and gets a
+      // false "changed by someone else" conflict -- and a status change right after typing
+      // (e.g. Mark Prepared straight after entering the sheet number) could race it.
+      while (this.autoSaving) await new Promise(r => setTimeout(r, 80));
       this.saving = true; this.saveMsg = '';
       const payload = {
         ...this.header,
@@ -307,7 +355,16 @@ export default {
         this.autoSavePending = false;
       } catch (e) {
         ok = false;
-        if (e.status === 409) {
+        if (e.status === 409 && e.data && e.data.code === 'DUPLICATE') {
+          // uniqueness rule: sheet number or invoice already in use -- nothing to reload,
+          // the person just needs to change the number
+          this.saveMsg = '';
+          alert("Not saved:\n\n" + (e.data.problems || [e.message]).join('\n'));
+        } else if (e.status === 423) {
+          this.status = (e.data && e.data.status) || this.status;
+          this.saveMsg = '';
+          alert(e.message);
+        } else if (e.status === 409) {
           this.saveMsg = '';
           const reload = confirm(
             "This runsheet was changed by someone else since you opened it, so your changes here weren't saved.\n\n" +
@@ -365,7 +422,7 @@ export default {
     // Save button (so it gets the same version-conflict protection for free), just without
     // any of the interruptive UI (no alert, no confirm dialog, no button-state changes).
     scheduleAutoSave() {
-      if (!this.readyForAutoSave || this.autoSaveConflict) return;
+      if (!this.readyForAutoSave || this.autoSaveConflict || this.locked) return;
       clearTimeout(this.autoSaveTimer);
       this.autoSavePending = true;
       this.autoSaveTimer = setTimeout(() => this.autoSave(), 2500);
@@ -399,6 +456,7 @@ export default {
         // either — just flag it and stop auto-saving until a manual Save resolves it
         // through the normal reload-or-keep-working choice.
         if (e.status === 409) this.autoSaveConflict = true;
+        if (e.status === 423) this.status = (e.data && e.data.status) || this.status; // now locked; `locked` stops further auto-saves
         // any other error: stay quiet, the next edit will schedule another attempt
       } finally {
         this.autoSaving = false;
@@ -417,14 +475,14 @@ export default {
     // whatever's currently on screen, so printing without saving would silently print stale
     // data (exactly what was on the sheet as of the last Save, missing anything added since).
     async print() {
-      const ok = await this.save();
+      const ok = this.locked ? true : await this.save();
       if (!ok || !this.runsheetId) return;
       window.open(`/print.html?id=${this.runsheetId}`, '_blank');
     },
     // Same reasoning as print() above — the export reads the saved runsheet from the
     // database, so it needs a save first too, or it would silently export stale data.
     async downloadExcel() {
-      const ok = await this.save();
+      const ok = this.locked ? true : await this.save();
       if (!ok || !this.runsheetId) return;
       this.excelDownloading = true;
       try {
@@ -499,14 +557,30 @@ export default {
     </div>
     <div class="toolbar">
       <input ref="photoInput" type="file" accept="image/*" multiple style="display:none" @change="onPhotosChosen" />
-      <button @click="triggerPhotoInput">📷 From photo</button>
-      <button @click="addStop" :disabled="atLimit">+ Add stop</button>
-      <button class="primary" @click="save" :disabled="saving">{{ saving ? 'Saving…' : 'Save' }}</button>
+      <button @click="triggerPhotoInput" :disabled="locked">📷 From photo</button>
+      <button @click="addStop" :disabled="atLimit || locked">+ Add stop</button>
+      <button class="primary" @click="save" :disabled="saving || locked">{{ saving ? 'Saving…' : 'Save' }}</button>
       <button @click="print" :disabled="saving">🖨️ Print</button>
       <button @click="downloadExcel" :disabled="saving || excelDownloading">{{ excelDownloading ? 'Preparing…' : '📊 Excel' }}</button>
       <button v-if="runsheetId" @click="openVersionHistory">Version History</button>
       <span class="hint" v-if="saveMsg">{{ saveMsg }}</span>
     </div>
+  </div>
+
+  <div class="status-bar" v-if="runsheetId">
+    <span :class="'status-badge status-' + status">{{ statusLabel }}</span>
+    <span class="hint" v-if="status === 'draft'">Enter a sheet number, then mark it Prepared.</span>
+    <span class="hint" v-else-if="locked">Contents are locked at this stage.</span>
+    <span class="status-actions">
+      <button v-for="st in nextForward" :key="st" class="small" @click="advanceTo(st)" :disabled="statusBusy || saving">
+        {{ { prepared: 'Mark Prepared', pending: 'Mark Pending Delivery' }[st] }}
+      </button>
+      <router-link v-if="canSeeStatusBoard && status !== 'draft'" class="small-link" :to="{ path: '/status', query: { open: runsheetId } }">Open on Status board →</router-link>
+    </span>
+  </div>
+
+  <div class="warn-banner" v-if="locked">
+    This runsheet is <b>{{ statusLabel }}</b> — its contents can't be changed now. Status updates and admin remarks are still possible; only a super user can edit the contents.
   </div>
 
   <div class="warn-banner" v-if="viewingVersion">
@@ -536,6 +610,7 @@ export default {
     </div>
   </div>
 
+  <fieldset class="lockable" :disabled="locked">
   <div class="panel">
     <h2 style="margin-top:0;font-size:14px;">Run details</h2>
     <div class="field-row">
@@ -563,6 +638,7 @@ export default {
     :frequentColumns="frequentColumns" :atLimit="atLimit"
     @add-stop="addStop" @remove-stop="removeStop"
     @move-stop="(i, dir) => dir==='up' ? moveUp(i) : moveDown(i)" @reorder-stop="reorderStop" />
+  </fieldset>
 
   <div class="totals-strip" v-if="stops.length">
     <span>Invoices: <b>{{ sheetTotals.invoices }}</b> / 25</span>

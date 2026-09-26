@@ -99,7 +99,9 @@ function writeHeader(ws, DATA, r) {
   cell(ws, r, 1, 'Tel: 6262 1234 · Fax: 6588 8251 · admin@sriambikas.com', { font: { size: 9, color: { argb: 'FF555555' } } });
   r++;
   const kv = [['Run Date', DATA.meta.run_date], ['Area', DATA.meta.area], ['Delivery Date', DATA.meta.del_date],
-    ['Delivery Man', DATA.meta.del_man], ['Vehicle No', DATA.meta.veh_no]];
+    ['Delivery Man', DATA.meta.del_man], ...((DATA.meta.driver || DATA.meta.driver_company) ? [['Driver', [DATA.meta.driver, DATA.meta.driver_company].filter(Boolean).join(' · ')]] : []), ['Vehicle No', DATA.meta.veh_no],
+    // handover times, only once recorded -- otherwise the header is exactly as before
+    ...(DATA.meta.time_out ? [['Time Out', DATA.meta.time_out]] : []), ...(DATA.meta.time_in ? [['Time In', DATA.meta.time_in]] : [])];
   let c = 1;
   kv.forEach(([label, val]) => {
     cell(ws, r, c, label, { font: { bold: true, size: 9 }, alignment: { horizontal: 'right' } });

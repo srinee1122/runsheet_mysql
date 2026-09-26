@@ -24,9 +24,20 @@
 export const MODULES = [
   { key: 'builder', label: 'Runsheet Builder' },
   { key: 'history', label: 'History' },
+  { key: 'status', label: 'Status board' },
   { key: 'products', label: 'Products' },
   { key: 'customers', label: 'Customers' },
   { key: 'settings', label: 'Settings' },
 ];
 
 export const MODULE_KEYS = MODULES.map((m) => m.key);
+
+// What a person can DO, granted per person by the super user. Must match ACTIONS in db.js.
+export const ACTIONS = [
+  { key: 'prepare', label: 'Prepare', hint: 'Draft → Prepared → Pending Delivery' },
+  { key: 'handover', label: 'Hand over', hint: 'Record time in/out, puller, crew, driver; mark Out for Delivery' },
+  { key: 'deliver', label: 'Record delivery', hint: 'Out for Delivery → Partial / Full Delivery' },
+  { key: 'move_back', label: 'Move back / Cancel', hint: 'Move to an earlier status or cancel, with a reason' },
+  { key: 'remarks', label: 'Remarks', hint: 'Add remarks to a runsheet' },
+  { key: 'view_log', label: 'Activity log', hint: 'Read a runsheet’s activity log' },
+];

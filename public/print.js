@@ -73,7 +73,20 @@ import { buildRunsheetData, ctnOf } from './lib/runsheet-data.js';
     document.getElementById("m-area").textContent = DATA.meta.area;
     document.getElementById("m-deldate").textContent = DATA.meta.del_date;
     document.getElementById("m-delman").textContent = DATA.meta.del_man;
+    // "MUTHU · ABC LOGISTICS": the driver in bold, their delivery company after it in smaller type
+    const drv = document.getElementById("m-driver");
+    drv.textContent = DATA.meta.driver || (DATA.meta.driver_company ? "" : "\u00a0");
+    if (DATA.meta.driver_company) {
+      const co = document.createElement("span");
+      co.className = "co";
+      co.textContent = (DATA.meta.driver ? " · " : "") + DATA.meta.driver_company;
+      drv.appendChild(co);
+      drv.title = drv.textContent;
+    }
     document.getElementById("m-veh").textContent = DATA.meta.veh_no || "\u00a0";
+    // filled from the handover details once recorded on the Status board; blank lines otherwise
+    document.getElementById("m-timeout").textContent = DATA.meta.time_out || "\u00a0";
+    document.getElementById("m-timein").textContent = DATA.meta.time_in || "\u00a0";
     if (DATA.meta.notes) {
       const n = document.getElementById("m-notes");
       n.style.display = "block";
